@@ -34,6 +34,24 @@ let currentExecution = {
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use('/public', express.static(path.join(__dirname, 'public')));
+
+app.get('/reports/live-progress.json', async (req, res) => {
+  try {
+    await syncLiveProgressFromJenkins();
+  } catch (error) {
+    currentExecution.lastError = error.message;
+  }
+
+  if (!fs.existsSync(LIVE_PROGRESS_PATH)) {
+    return res.status(404).json({
+      ok: false,
+      message: 'live-progress.json is not available yet.'
+    });
+  }
+
+  return res.sendFile(LIVE_PROGRESS_PATH);
+});
+
 app.use('/reports', express.static(REPORTS_DIR));
 
 app.get('/', (req, res) => {
@@ -251,6 +269,91 @@ async function getBuildInfo(buildNumber) {
   return response.data;
 }
 
+function getJenkinsReportUrls(buildNumber, fileName) {
+  const artifactPath = `reports/${fileName}`;
+
+  return {
+    workspace: `${getJobUrl(JENKINS_JOB_PLAYER)}/ws/${artifactPath}`,
+    artifact: `${getJobUrl(JENKINS_JOB_PLAYER)}/${buildNumber}/artifact/${artifactPath}`
+  };
+}
+
+async function downloadJenkinsReport(url) {
+  const response = await axios.get(url, {
+    auth: getJenkinsAuth(),
+    responseType: 'arraybuffer',
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+    validateStatus: status => status === 200 || status === 404
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  return Buffer.from(response.data);
+}
+
+async function syncJenkinsReportFile(buildNumber, fileName, options = {}) {
+  if (!buildNumber) {
+    return false;
+  }
+
+  ensureReportsDir();
+
+  const urls = getJenkinsReportUrls(buildNumber, fileName);
+  const candidates = options.preferWorkspace
+    ? [urls.workspace, urls.artifact]
+    : [urls.artifact, urls.workspace];
+
+  for (const url of candidates) {
+    try {
+      const report = await downloadJenkinsReport(url);
+
+      if (report) {
+        fs.writeFileSync(path.join(REPORTS_DIR, fileName), report);
+        return true;
+      }
+    } catch (error) {
+      currentExecution.lastError = `Could not sync ${fileName}: ${error.message}`;
+    }
+  }
+
+  return false;
+}
+
+async function syncJenkinsReports(buildNumber, options = {}) {
+  const preferWorkspace = Boolean(options.preferWorkspace);
+  const includeArtifacts = Boolean(options.includeArtifacts);
+
+  const result = {
+    liveProgress: await syncJenkinsReportFile(buildNumber, 'live-progress.json', { preferWorkspace })
+  };
+
+  if (includeArtifacts) {
+    result.newmanResult = await syncJenkinsReportFile(buildNumber, 'newman-result.json');
+    result.newmanReport = await syncJenkinsReportFile(buildNumber, 'newman-report.html');
+  }
+
+  currentExecution.reports = {
+    ...currentExecution.reports,
+    ...result,
+    syncedAt: new Date().toISOString()
+  };
+
+  return result;
+}
+
+async function syncLiveProgressFromJenkins() {
+  if (!currentExecution.buildNumber) {
+    return false;
+  }
+
+  return syncJenkinsReportFile(currentExecution.buildNumber, 'live-progress.json', {
+    preferWorkspace: currentExecution.running
+  });
+}
+
 async function waitForBuildNumber(queueId) {
   const maxAttempts = 40;
 
@@ -285,10 +388,25 @@ async function monitorBuild(buildNumber) {
       currentExecution.running = building;
       currentExecution.result = buildInfo.result || 'RUNNING';
 
+      await syncJenkinsReports(buildNumber, {
+        preferWorkspace: building,
+        includeArtifacts: !building
+      });
+
       if (!building) {
+        const result = buildInfo.result || 'UNKNOWN';
+
         currentExecution.running = false;
         currentExecution.finishedAt = new Date().toISOString();
-        currentExecution.result = buildInfo.result || 'UNKNOWN';
+        currentExecution.result = result;
+
+        const localProgress = readLiveProgressOrDefault();
+        const syncedStatus = localProgress.execution && localProgress.execution.status;
+
+        if (!syncedStatus || syncedStatus === 'RUNNING' || syncedStatus === 'QUEUED') {
+          markLiveProgressStatus(result === 'ABORTED' ? 'STOPPED' : result, { buildNumber });
+        }
+
         break;
       }
 
@@ -565,3 +683,4 @@ app.listen(PORT, () => {
   console.log(`QA Dashboard server running on http://localhost:${PORT}`);
   console.log('Execution mode: JENKINS');
 });
+
