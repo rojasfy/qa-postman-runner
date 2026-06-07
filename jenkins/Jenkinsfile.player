@@ -189,7 +189,7 @@ pipeline {
                               --region "$PLAYER_REGION" \
                               --endpointType "$PLAYER_ENDPOINT_TYPE" \
                               --folder "$PLAYER_FOLDER" \
-                              --userFlow "$PLAYER_USER_FLOW"
+                              --userFlow "${PLAYER_USER_FLOW:-}"
                         '''
                     }
                 }
@@ -321,3 +321,4 @@ pipeline {
         }
     }
 }
+
