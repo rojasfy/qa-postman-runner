@@ -1,0 +1,323 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(
+            name: 'COLLECTION',
+            choices: ['PLAYER'],
+            description: 'Collection/module to execute'
+        )
+
+        choice(
+            name: 'environment',
+            choices: ['preuat', 'uat', 'uat-berc', 'uat-oper', 'prod', 'prod-behf', 'prod-fehf'],
+            description: 'Target environment'
+        )
+
+        choice(
+            name: 'platform',
+            choices: ['aws', 'azr'],
+            description: 'Target platform'
+        )
+
+        choice(
+            name: 'serviceType',
+            choices: ['ott', 'iptv'],
+            description: 'Service type'
+        )
+
+        choice(
+            name: 'device',
+            choices: ['web', 'roku', 'kaon', 'zte', 'mobileandroid', 'mobileios'],
+            description: 'Device'
+        )
+
+        choice(
+            name: 'region',
+            choices: [
+                'guatemala',
+                'nicaragua',
+                'elsalvador',
+                'costarica',
+                'honduras',
+                'mexico',
+                'colombia',
+                'panama',
+                'peru',
+                'chile',
+                'ecuador',
+                'dominicana',
+                'brasil',
+                'argentina',
+                'uruguay',
+                'paraguay'
+            ],
+            description: 'Region'
+        )
+
+        choice(
+            name: 'endpointType',
+            choices: ['origin', 'akamai'],
+            description: 'Endpoint type'
+        )
+
+        string(
+            name: 'folder',
+            defaultValue: 'Getmedia',
+            description: 'Postman collection folder to execute'
+        )
+
+        string(
+            name: 'userFlow',
+            defaultValue: '',
+            description: 'Reserved for USUARIOS future flow'
+        )
+    }
+
+    environment {
+        PROJECT_DIR = "${WORKSPACE}"
+        REPORTS_DIR = "${WORKSPACE}/reports"
+        NPM_CACHE_DIR = '/var/jenkins_home/npm-cache/player'
+    }
+
+    stages {
+        stage('Validate parameters') {
+            steps {
+                script {
+                    if (!params.folder?.trim()) {
+                        error('Parameter folder is required. The runner must not execute the whole collection.')
+                    }
+
+                    if (params.COLLECTION != 'PLAYER') {
+                        error("Unsupported COLLECTION for this job: ${params.COLLECTION}")
+                    }
+                }
+            }
+        }
+
+        stage('Prepare reports directory') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    sh '''
+                        set -eu
+                        mkdir -p "$REPORTS_DIR"
+
+                        node -e "
+                        const fs = require('fs');
+
+                        const data = {
+                          execution: {
+                            status: 'RUNNING',
+                            collection: 'PLAYER',
+                            buildNumber: process.env.BUILD_NUMBER,
+                            startedAt: new Date().toISOString(),
+                            finishedAt: null,
+                            durationMs: null
+                          },
+                          parameters: {
+                            environment: process.env.environment,
+                            platform: process.env.platform,
+                            serviceType: process.env.serviceType,
+                            device: process.env.device,
+                            region: process.env.region,
+                            endpointType: process.env.endpointType,
+                            folder: process.env.folder,
+                            userFlow: process.env.userFlow || null
+                          },
+                          summary: {
+                            total: 0,
+                            passed: 0,
+                            failed: 0,
+                            currentApi: null
+                          },
+                          apis: []
+                        };
+
+                        fs.writeFileSync('reports/live-progress.json', JSON.stringify(data, null, 2));
+                        "
+                    '''
+                }
+            }
+        }
+
+        stage('Install dependencies') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    sh '''
+                        set -eu
+                        mkdir -p "$NPM_CACHE_DIR"
+
+                        if [ -d node_modules/newman ] && node -e "require('newman')" >/dev/null 2>&1; then
+                          echo "Newman already available. Skipping npm install."
+                        elif [ -f package-lock.json ]; then
+                          echo "Newman not available. Installing dependencies from package-lock.json..."
+                          npm ci --cache "$NPM_CACHE_DIR" --prefer-offline
+                        else
+                          echo "Newman not available. Installing dependencies..."
+                          npm install --cache "$NPM_CACHE_DIR" --prefer-offline
+                        fi
+                    '''
+                }
+            }
+        }
+
+        stage('Run PLAYER regression') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    withEnv([
+                        "PLAYER_ENVIRONMENT=${params.environment}",
+                        "PLAYER_PLATFORM=${params.platform}",
+                        "PLAYER_SERVICE_TYPE=${params.serviceType}",
+                        "PLAYER_DEVICE=${params.device}",
+                        "PLAYER_REGION=${params.region}",
+                        "PLAYER_ENDPOINT_TYPE=${params.endpointType}",
+                        "PLAYER_FOLDER=${params.folder}",
+                        "PLAYER_USER_FLOW=${params.userFlow ?: ''}"
+                    ]) {
+                        sh '''
+                            set -eu
+                            node runners/player.js \
+                              --environment "$PLAYER_ENVIRONMENT" \
+                              --platform "$PLAYER_PLATFORM" \
+                              --serviceType "$PLAYER_SERVICE_TYPE" \
+                              --device "$PLAYER_DEVICE" \
+                              --region "$PLAYER_REGION" \
+                              --endpointType "$PLAYER_ENDPOINT_TYPE" \
+                              --folder "$PLAYER_FOLDER" \
+                              --userFlow "$PLAYER_USER_FLOW"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            dir("${env.PROJECT_DIR}") {
+                sh '''
+                    node -e "
+                    const fs = require('fs');
+                    const path = 'reports/live-progress.json';
+                    const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+                    data.execution.status = 'SUCCESS';
+                    data.execution.buildNumber = process.env.BUILD_NUMBER;
+                    data.execution.finishedAt = new Date().toISOString();
+
+                    if (data.execution.startedAt) {
+                      data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                    }
+
+                    fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                    "
+                '''
+            }
+        }
+
+        failure {
+            dir("${env.PROJECT_DIR}") {
+                sh '''
+                    node -e "
+                    const fs = require('fs');
+                    const path = 'reports/live-progress.json';
+
+                    let data = {
+                      execution: {
+                        status: 'FAILURE',
+                        collection: 'PLAYER',
+                        buildNumber: process.env.BUILD_NUMBER,
+                        startedAt: null,
+                        finishedAt: new Date().toISOString(),
+                        durationMs: null
+                      },
+                      parameters: {},
+                      summary: {
+                        total: 0,
+                        passed: 0,
+                        failed: 1,
+                        currentApi: null
+                      },
+                      apis: []
+                    };
+
+                    if (fs.existsSync(path)) {
+                      data = JSON.parse(fs.readFileSync(path, 'utf8'));
+                      data.execution.status = 'FAILURE';
+                      data.execution.buildNumber = process.env.BUILD_NUMBER;
+                      data.execution.finishedAt = new Date().toISOString();
+
+                      if (data.execution.startedAt) {
+                        data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                      }
+                    }
+
+                    fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                    "
+                '''
+            }
+        }
+
+        aborted {
+            dir("${env.PROJECT_DIR}") {
+                sh '''
+                    node -e "
+                    const fs = require('fs');
+                    const path = 'reports/live-progress.json';
+
+                    let data = {
+                      execution: {
+                        status: 'STOPPED',
+                        collection: 'PLAYER',
+                        buildNumber: process.env.BUILD_NUMBER,
+                        startedAt: null,
+                        finishedAt: new Date().toISOString(),
+                        durationMs: null,
+                        stoppedBy: 'jenkins'
+                      },
+                      parameters: {},
+                      summary: {
+                        total: 0,
+                        passed: 0,
+                        failed: 0,
+                        currentApi: 'Execution stopped by user'
+                      },
+                      apis: []
+                    };
+
+                    if (fs.existsSync(path)) {
+                      data = JSON.parse(fs.readFileSync(path, 'utf8'));
+                      data.execution.status = 'STOPPED';
+                      data.execution.buildNumber = process.env.BUILD_NUMBER;
+                      data.execution.finishedAt = new Date().toISOString();
+                      data.execution.stoppedBy = 'jenkins';
+
+                      if (data.execution.startedAt) {
+                        data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                      }
+
+                      data.summary = data.summary || {};
+                      data.summary.currentApi = 'Execution stopped by user';
+                    }
+
+                    fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                    "
+                '''
+            }
+        }
+
+        always {
+            dir("${env.PROJECT_DIR}") {
+                archiveArtifacts(
+                    artifacts: 'reports/live-progress.json,reports/newman-result.json,reports/newman-report.html',
+                    allowEmptyArchive: true
+                )
+            }
+        }
+    }
+}

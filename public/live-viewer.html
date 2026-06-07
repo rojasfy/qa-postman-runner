@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA Postman Runner - PLAYER</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800;900&family=Rajdhani:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+
+  <link rel="stylesheet" href="/public/styles.css" />
+  <script src="/public/app.js" defer></script>
+</head>
+
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">QA POSTMAN RUNNER</p>
+        <h1>Regresión PLAYER</h1>
+        <p class="subtitle">Ejecución vía Jenkins con progreso en vivo desde <code>reports/live-progress.json</code></p>
+      </div>
+      <div class="status-stack">
+        <span id="serverStatus" class="pill pill-muted">SERVER: --</span>
+        <span id="jobStatus" class="pill pill-muted">JENKINS: IDLE</span>
+      </div>
+    </header>
+
+    <section class="panel form-panel">
+      <form id="runForm" class="run-form">
+        <label>
+          <span>environment</span>
+          <select name="environment" required>
+            <option value="preuat">preuat</option>
+            <option value="uat">uat</option>
+            <option value="uat-berc" selected>uat-berc</option>
+            <option value="uat-oper">uat-oper</option>
+            <option value="prod">prod</option>
+            <option value="prod-behf">prod-behf</option>
+            <option value="prod-fehf">prod-fehf</option>
+          </select>
+        </label>
+
+        <label>
+          <span>platform</span>
+          <select name="platform" required>
+            <option value="aws" selected>aws</option>
+            <option value="azr">azr</option>
+          </select>
+        </label>
+
+        <label>
+          <span>serviceType</span>
+          <select name="serviceType" required>
+            <option value="ott" selected>ott</option>
+            <option value="iptv">iptv</option>
+          </select>
+        </label>
+
+        <label>
+          <span>device</span>
+          <select name="device" required>
+            <option value="web" selected>web</option>
+            <option value="roku">roku</option>
+            <option value="kaon">kaon</option>
+            <option value="zte">zte</option>
+            <option value="mobileandroid">mobileandroid</option>
+            <option value="mobileios">mobileios</option>
+          </select>
+        </label>
+
+        <label>
+          <span>region</span>
+          <select id="region" name="region" required>
+            <option value="guatemala">guatemala</option>
+            <option value="nicaragua">nicaragua</option>
+            <option value="elsalvador">elsalvador</option>
+            <option value="costarica">costarica</option>
+            <option value="honduras">honduras</option>
+            <option value="mexico" selected>mexico</option>
+            <option value="colombia">colombia</option>
+            <option value="panama">panama</option>
+            <option value="peru">peru</option>
+            <option value="chile">chile</option>
+            <option value="ecuador">ecuador</option>
+            <option value="dominicana">dominicana</option>
+            <option value="brasil">brasil</option>
+            <option value="argentina">argentina</option>
+            <option value="uruguay">uruguay</option>
+            <option value="paraguay">paraguay</option>
+          </select>
+        </label>
+
+        <label>
+          <span>endpointType</span>
+          <select name="endpointType" required>
+            <option value="origin" selected>origin</option>
+            <option value="akamai">akamai</option>
+          </select>
+        </label>
+
+        <label>
+          <span>folder</span>
+          <input name="folder" value="Getmedia" required />
+        </label>
+
+        <div class="actions-bar">
+          <span class="actions-title">ACCIONES</span>
+          <button id="runButton" type="submit" class="action-btn action-run" title="Ejecutar regresión">▶</button>
+          <button id="stopButton" type="button" class="action-btn action-stop" title="Detener ejecución"
+            disabled>■</button>
+          <button id="clearButton" type="button" class="action-btn action-clear" title="Limpiar resultados">⌫</button>
+          <button id="refreshButton" type="button" class="action-btn action-refresh" title="Actualizar">↻</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="metrics-grid">
+      <article class="metric-card">
+        <span>Collection</span>
+        <strong id="metricCollection">--</strong>
+      </article>
+      <article class="metric-card">
+        <span>Total</span>
+        <strong id="metricTotal">0</strong>
+      </article>
+      <article class="metric-card metric-success">
+        <span>Passed</span>
+        <strong id="metricPassed">0</strong>
+      </article>
+      <article class="metric-card metric-failure">
+        <span>Failed</span>
+        <strong id="metricFailed">0</strong>
+      </article>
+    </section>
+
+    <section class="panel metadata-panel">
+      <div>
+        <span>Started</span>
+        <strong id="metaStarted">--</strong>
+      </div>
+      <div>
+        <span>Finished</span>
+        <strong id="metaFinished">--</strong>
+      </div>
+      <div>
+        <span>Duration</span>
+        <strong id="metaDuration">--</strong>
+      </div>
+      <div>
+        <span>Current API</span>
+        <strong id="metaCurrentApi">--</strong>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel api-panel">
+        <div class="panel-title-row">
+          <h2>APIs ejecutadas</h2>
+          <span id="apiCounter" class="pill pill-muted">0</span>
+        </div>
+        <div id="apiList" class="api-list"></div>
+      </aside>
+
+      <section class="panel detail-panel">
+        <div class="panel-title-row">
+          <h2 id="detailTitle">Detalle</h2>
+          <span id="detailStatus" class="pill pill-muted">--</span>
+        </div>
+
+        <div id="detailUrl" class="url-box">Selecciona una API para ver el detalle.</div>
+
+        <details open>
+          <summary>Request headers</summary>
+          <pre id="requestHeaders">{}</pre>
+        </details>
+
+        <details>
+          <summary>Request body</summary>
+          <pre id="requestBody">null</pre>
+        </details>
+
+        <details open>
+          <summary>Response headers</summary>
+          <pre id="responseHeaders">{}</pre>
+        </details>
+
+        <details open>
+          <summary>Response body</summary>
+          <pre id="responseBody">{}</pre>
+        </details>
+
+        <details open>
+          <summary>Assertions</summary>
+          <div id="assertionsPanel" class="assertions-list"></div>
+        </details>
+
+        <details>
+          <summary>Parámetros</summary>
+          <pre id="parametersPanel">{}</pre>
+        </details>
+      </section>
+    </section>
+  </main>
+</body>
+
+</html>
