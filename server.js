@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 const axios = require('axios');
 const cors = require('cors');
@@ -15,7 +16,7 @@ const JENKINS_JOB_PLAYER = process.env.JENKINS_JOB_PLAYER || 'PLAYER';
 const JENKINS_USER = process.env.JENKINS_USER;
 const JENKINS_API_TOKEN = process.env.JENKINS_API_TOKEN;
 const JENKINS_POLL_INTERVAL_MS = Number(process.env.JENKINS_POLL_INTERVAL_MS || 1500);
-const JENKINS_DASHBOARD_BASE_URL = process.env.JENKINS_DASHBOARD_BASE_URL || `http://host.docker.internal:${PORT}`;
+const JENKINS_DASHBOARD_BASE_URL = process.env.JENKINS_DASHBOARD_BASE_URL || getDashboardBaseUrlForJenkins(PORT);
 
 const REPORTS_DIR = path.join(__dirname, 'reports');
 const LIVE_PROGRESS_PATH = path.join(REPORTS_DIR, 'live-progress.json');
@@ -132,6 +133,27 @@ function getJenkinsAuth() {
     username: JENKINS_USER,
     password: JENKINS_API_TOKEN
   };
+}
+
+function getDashboardBaseUrlForJenkins(port) {
+  const interfaces = os.networkInterfaces();
+  const addresses = Object.entries(interfaces)
+    .flatMap(([name, items]) => (items || [])
+      .filter(item => item.family === 'IPv4' && !item.internal)
+      .map(item => ({ name, address: item.address })));
+
+  const preferred = addresses
+    .filter(item => !/wsl|docker|virtual|hyper-v|vethernet/i.test(item.name))
+    .find(item => /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(item.address));
+
+  const fallback = addresses.find(item => /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(item.address));
+  const selected = preferred || fallback;
+
+  if (selected) {
+    return `http://${selected.address}:${port}`;
+  }
+
+  return `http://host.docker.internal:${port}`;
 }
 
 function getBaseUrl() {
