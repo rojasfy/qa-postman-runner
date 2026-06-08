@@ -77,6 +77,12 @@ pipeline {
             defaultValue: '',
             description: 'Reserved for USUARIOS future flow'
         )
+
+        string(
+            name: 'dashboardBaseUrl',
+            defaultValue: 'http://host.docker.internal:3000',
+            description: 'Dashboard backend URL used by Jenkins to publish live progress'
+        )
     }
 
     environment {
@@ -177,10 +183,52 @@ pipeline {
                         "PLAYER_REGION=${params.region}",
                         "PLAYER_ENDPOINT_TYPE=${params.endpointType}",
                         "PLAYER_FOLDER=${params.folder}",
-                        "PLAYER_USER_FLOW=${params.userFlow ?: ''}"
+                        "PLAYER_USER_FLOW=${params.userFlow ?: ''}",
+                        "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
                     ]) {
                         sh '''
                             set -eu
+
+                            publish_live_progress() {
+                              if [ -z "${DASHBOARD_BASE_URL:-}" ] || [ ! -f reports/live-progress.json ]; then
+                                return 0
+                              fi
+
+                              DASHBOARD_LIVE_PROGRESS_URL="${DASHBOARD_BASE_URL%/}/jenkins/player/live-progress" \
+                              LIVE_PROGRESS_FILE="reports/live-progress.json" \
+                              node -e '
+                                const fs = require("fs");
+                                const http = require("http");
+                                const https = require("https");
+                                const target = process.env.DASHBOARD_LIVE_PROGRESS_URL;
+                                const file = process.env.LIVE_PROGRESS_FILE;
+
+                                if (!target || !fs.existsSync(file)) process.exit(0);
+
+                                const body = fs.readFileSync(file);
+                                const url = new URL(target);
+                                const client = url.protocol === "https:" ? https : http;
+                                const request = client.request(url, {
+                                  method: "POST",
+                                  hostname: url.hostname,
+                                  port: url.port,
+                                  path: `${url.pathname}${url.search}`,
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                    "Content-Length": body.length
+                                  }
+                                }, response => {
+                                  response.resume();
+                                  response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 300 ? 0 : 1));
+                                });
+
+                                request.on("error", () => process.exit(0));
+                                request.write(body);
+                                request.end();
+                                setTimeout(() => process.exit(0), 3000);
+                              ' >/dev/null 2>&1 || true
+                            }
+
                             node runners/player.js \
                               --environment "$PLAYER_ENVIRONMENT" \
                               --platform "$PLAYER_PLATFORM" \
@@ -189,7 +237,22 @@ pipeline {
                               --region "$PLAYER_REGION" \
                               --endpointType "$PLAYER_ENDPOINT_TYPE" \
                               --folder "$PLAYER_FOLDER" \
-                              --userFlow "${PLAYER_USER_FLOW:-}"
+                              --userFlow "${PLAYER_USER_FLOW:-}" &
+
+                            runner_pid=$!
+
+                            while kill -0 "$runner_pid" 2>/dev/null; do
+                              publish_live_progress
+                              sleep 2
+                            done
+
+                            set +e
+                            wait "$runner_pid"
+                            runner_status=$?
+                            set -e
+
+                            publish_live_progress
+                            exit "$runner_status"
                         '''
                     }
                 }
@@ -321,4 +384,3 @@ pipeline {
         }
     }
 }
-

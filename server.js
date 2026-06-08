@@ -28,12 +28,62 @@ let currentExecution = {
   startedAt: null,
   finishedAt: null,
   result: null,
-  lastError: null
+  lastError: null,
+  reports: null
 };
 
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use('/public', express.static(path.join(__dirname, 'public')));
+app.post('/jenkins/player/live-progress', (req, res) => {
+  try {
+    const progress = req.body;
+
+    if (!progress || typeof progress !== 'object' || !progress.execution) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid live progress payload.'
+      });
+    }
+
+    ensureReportsDir();
+    writeLiveProgress(progress);
+
+    const execution = progress.execution || {};
+    const status = execution.status || 'RUNNING';
+    const finalStatuses = ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED'];
+    const buildNumber = execution.buildNumber || currentExecution.buildNumber || null;
+
+    currentExecution = {
+      ...currentExecution,
+      running: !finalStatuses.includes(status),
+      buildNumber,
+      buildUrl: buildNumber ? `${getJobUrl(JENKINS_JOB_PLAYER)}/${buildNumber}/` : currentExecution.buildUrl,
+      jobName: JENKINS_JOB_PLAYER,
+      startedAt: execution.startedAt || currentExecution.startedAt,
+      finishedAt: execution.finishedAt || currentExecution.finishedAt,
+      result: status,
+      lastError: null,
+      reports: {
+        ...currentExecution.reports,
+        liveProgress: true,
+        syncedAt: new Date().toISOString()
+      }
+    };
+
+    return res.json({
+      ok: true,
+      execution: currentExecution
+    });
+  } catch (error) {
+    currentExecution.lastError = error.message;
+
+    return res.status(500).json({
+      ok: false,
+      message: error.message
+    });
+  }
+});
 
 app.get('/reports/live-progress.json', async (req, res) => {
   try {
@@ -269,6 +319,28 @@ async function getBuildInfo(buildNumber) {
   return response.data;
 }
 
+function buildReportLinks(buildNumber) {
+  const localLinks = {
+    liveProgress: '/reports/live-progress.json',
+    newmanHtml: '/reports/newman-report.html',
+    newmanJson: '/reports/newman-result.json'
+  };
+
+  if (!buildNumber) {
+    return localLinks;
+  }
+
+  const jobBuildUrl = `${getJobUrl(JENKINS_JOB_PLAYER)}/${buildNumber}`;
+
+  return {
+    ...localLinks,
+    jenkinsBuild: `${jobBuildUrl}/`,
+    jenkinsLiveProgress: `${jobBuildUrl}/artifact/reports/live-progress.json`,
+    jenkinsNewmanHtml: `${jobBuildUrl}/artifact/reports/newman-report.html`,
+    jenkinsNewmanJson: `${jobBuildUrl}/artifact/reports/newman-result.json`
+  };
+}
+
 function getJenkinsReportUrls(buildNumber, fileName) {
   const artifactPath = `reports/${fileName}`;
 
@@ -347,6 +419,10 @@ async function syncJenkinsReports(buildNumber, options = {}) {
 async function syncLiveProgressFromJenkins() {
   if (!currentExecution.buildNumber) {
     return false;
+  }
+
+  if (currentExecution.running && currentExecution.reports?.liveProgress) {
+    return true;
   }
 
   return syncJenkinsReportFile(currentExecution.buildNumber, 'live-progress.json', {
@@ -491,7 +567,10 @@ app.get('/status', async (req, res) => {
   res.json({
     server: 'OK',
     mode: 'JENKINS',
-    execution: currentExecution
+    execution: {
+      ...currentExecution,
+      reportLinks: buildReportLinks(currentExecution.buildNumber)
+    }
   });
 });
 
@@ -526,7 +605,8 @@ app.post('/run/player', async (req, res) => {
       startedAt: new Date().toISOString(),
       finishedAt: null,
       result: 'QUEUED',
-      lastError: null
+      lastError: null,
+      reports: null
     };
 
     const triggered = await triggerPlayerBuild(params);
@@ -543,6 +623,10 @@ app.post('/run/player', async (req, res) => {
         currentExecution.buildNumber = buildNumber;
         currentExecution.buildUrl = buildUrl;
         currentExecution.result = 'RUNNING';
+        currentExecution.reports = {
+          ...currentExecution.reports,
+          reportLinks: buildReportLinks(buildNumber)
+        };
         markLiveProgressStatus('RUNNING', { buildNumber });
         monitorBuild(buildNumber);
       })
@@ -631,7 +715,8 @@ app.post('/clear/player', async (req, res) => {
       startedAt: null,
       finishedAt: null,
       result: 'CLEARED',
-      lastError: null
+      lastError: null,
+      reports: null
     };
 
     return res.json({
@@ -683,4 +768,3 @@ app.listen(PORT, () => {
   console.log(`QA Dashboard server running on http://localhost:${PORT}`);
   console.log('Execution mode: JENKINS');
 });
-

@@ -3,6 +3,7 @@ const RUN_INTERVAL_MS = 1500;
 let selectedApiId = null;
 let refreshTimer = null;
 let lastProgress = null;
+let lastExecution = null;
 
 const form = document.getElementById('runForm');
 const runButton = document.getElementById('runButton');
@@ -11,6 +12,8 @@ const clearButton = document.getElementById('clearButton');
 const refreshButton = document.getElementById('refreshButton');
 const serverStatus = document.getElementById('serverStatus');
 const jobStatus = document.getElementById('jobStatus');
+const reportLinks = document.getElementById('reportLinks');
+const reportSyncStatus = document.getElementById('reportSyncStatus');
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
@@ -110,16 +113,29 @@ function startLiveRefresh() {
   }, RUN_INTERVAL_MS);
 }
 
+function stopLiveRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
 async function refreshStatus() {
   try {
     const response = await fetch('/status?cache=' + Date.now());
     const data = await response.json();
 
     serverStatus.textContent = `SERVER: ${data.server || 'OK'} / ${data.mode || '--'}`;
+    lastExecution = data.execution || null;
     renderJobStatus(data.execution);
+    renderReportLinks(data.execution);
 
     const isRunning = data.execution?.running === true;
-    setRunningUi(isRunning, data.execution?.result);
+    const result = data.execution?.result;
+    setRunningUi(isRunning, result);
+
+    if (!isRunning && ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED'].includes(String(result).toUpperCase())) {
+      stopLiveRefresh();
+    }
   } catch (error) {
     serverStatus.textContent = 'SERVER: ERROR';
     serverStatus.className = 'pill pill-failed';
@@ -139,6 +155,12 @@ async function refreshLiveProgress() {
     renderSummary(progress.summary || {});
     renderParameters(progress.parameters || {});
     renderApis(progress.apis || []);
+    renderReportLinks({
+      result: progress.execution?.status,
+      buildNumber: progress.execution?.buildNumber,
+      reports: lastExecution?.reports,
+      reportLinks: lastExecution?.reportLinks
+    });
 
     const finalStatuses = ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED', 'CLEARED'];
     const status = progress.execution?.status;
@@ -178,6 +200,39 @@ function renderJobStatus(execution) {
   jobStatus.className = `pill ${statusToPillClass(result)}`;
 }
 
+function renderReportLinks(execution = {}) {
+  if (!reportLinks || !reportSyncStatus) return;
+
+  const result = String(execution.result || execution.status || '').toUpperCase();
+  const reports = execution.reports || {};
+  const links = execution.reportLinks || reports.reportLinks || {};
+  const hasBuild = Boolean(execution.buildNumber);
+  const isFinal = ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED'].includes(result);
+
+  reportSyncStatus.textContent = reports.syncedAt
+    ? `SYNC ${formatDate(reports.syncedAt)}`
+    : (hasBuild ? `BUILD #${execution.buildNumber}` : '--');
+
+  if (!hasBuild) {
+    reportLinks.innerHTML = '<div class="empty-state">Los enlaces se habilitan cuando Jenkins asigna un build.</div>';
+    return;
+  }
+
+  const items = [
+    { label: 'Build Jenkins', href: links.jenkinsBuild },
+    { label: 'Live progress', href: links.liveProgress || '/reports/live-progress.json' },
+    { label: 'Newman HTML', href: links.newmanHtml || '/reports/newman-report.html', disabled: !isFinal && !reports.newmanReport },
+    { label: 'Newman JSON', href: links.newmanJson || '/reports/newman-result.json', disabled: !isFinal && !reports.newmanResult }
+  ];
+
+  reportLinks.innerHTML = items.map(item => {
+    if (!item.href || item.disabled) {
+      return `<span class="report-link disabled">${escapeHtml(item.label)}</span>`;
+    }
+
+    return `<a class="report-link" href="${escapeHtml(item.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.label)}</a>`;
+  }).join('');
+}
 function renderExecution(execution) {
   document.getElementById('metricCollection').textContent = execution.collection || '--';
   document.getElementById('metaStarted').textContent = formatDate(execution.startedAt);
@@ -293,6 +348,7 @@ function clearDashboardView() {
   document.getElementById('metaDuration').textContent = '--';
   document.getElementById('metaCurrentApi').textContent = '--';
   document.getElementById('parametersPanel').textContent = '{}';
+  renderReportLinks({});
   clearDetail();
 }
 
