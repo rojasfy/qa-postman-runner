@@ -194,6 +194,7 @@ pipeline {
                                 return 0
                               fi
 
+                              echo "[LIVE-PROGRESS] Publishing to ${DASHBOARD_BASE_URL%/}/jenkins/player/live-progress"
                               DASHBOARD_LIVE_PROGRESS_URL="${DASHBOARD_BASE_URL%/}/jenkins/player/live-progress" \
                               LIVE_PROGRESS_FILE="reports/live-progress.json" \
                               node -e '
@@ -222,11 +223,11 @@ pipeline {
                                   response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 300 ? 0 : 1));
                                 });
 
-                                request.on("error", () => process.exit(0));
+                                request.on("error", error => { console.error("[LIVE-PROGRESS] " + error.message); process.exit(0); });
                                 request.write(body);
                                 request.end();
                                 setTimeout(() => process.exit(0), 3000);
-                              ' >/dev/null 2>&1 || true
+                              ' || echo "[LIVE-PROGRESS] publish request failed; dashboard will continue polling local progress"
                             }
 
                             node runners/player.js \

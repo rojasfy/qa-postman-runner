@@ -15,6 +15,7 @@ const JENKINS_JOB_PLAYER = process.env.JENKINS_JOB_PLAYER || 'PLAYER';
 const JENKINS_USER = process.env.JENKINS_USER;
 const JENKINS_API_TOKEN = process.env.JENKINS_API_TOKEN;
 const JENKINS_POLL_INTERVAL_MS = Number(process.env.JENKINS_POLL_INTERVAL_MS || 1500);
+const JENKINS_DASHBOARD_BASE_URL = process.env.JENKINS_DASHBOARD_BASE_URL || `http://host.docker.internal:${PORT}`;
 
 const REPORTS_DIR = path.join(__dirname, 'reports');
 const LIVE_PROGRESS_PATH = path.join(REPORTS_DIR, 'live-progress.json');
@@ -279,6 +280,7 @@ async function triggerPlayerBuild(params) {
   form.append('endpointType', params.endpointType);
   form.append('folder', params.folder);
   form.append('userFlow', params.userFlow || '');
+  form.append('dashboardBaseUrl', params.dashboardBaseUrl || JENKINS_DASHBOARD_BASE_URL);
 
   const response = await axios.post(
     `${getJobUrl(JENKINS_JOB_PLAYER)}/buildWithParameters`,
@@ -569,7 +571,8 @@ app.get('/status', async (req, res) => {
     mode: 'JENKINS',
     execution: {
       ...currentExecution,
-      reportLinks: buildReportLinks(currentExecution.buildNumber)
+      reportLinks: buildReportLinks(currentExecution.buildNumber),
+      dashboardBaseUrl: JENKINS_DASHBOARD_BASE_URL
     }
   });
 });
