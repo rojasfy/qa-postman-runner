@@ -165,6 +165,53 @@ app.get('/api/:module/runs/:runId/reports', async (req, res) => {
     data: updatedRun.reports || buildReports(updatedRun)
   });
 });
+app.post('/api/:module/runs/:runId/stop', async (req, res) => {
+  try {
+    const run = getRunOr404(req.params.module, req.params.runId, res);
+    if (!run) return;
+
+    if (FINAL_STATUSES.has(String(run.status || '').toUpperCase())) {
+      return res.status(409).json({
+        ok: false,
+        message: `Run is already finished with status ${run.status}.`,
+        data: run
+      });
+    }
+
+    if (!run.queueId && !run.buildNumber) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Run does not have a Jenkins queue id or build number yet.',
+        data: run
+      });
+    }
+
+    await stopRunInJenkins(run);
+
+    const now = new Date().toISOString();
+    const updatedRun = runStore.update(run.module, run.id, {
+      status: 'STOPPING',
+      result: 'STOPPING',
+      cancellationRequested: true,
+      stopRequestedAt: now,
+      qaConsole: [
+        ...(run.qaConsole || []),
+        { timestamp: now, level: 'warn', message: 'Stop requested from dashboard' }
+      ]
+    });
+
+    res.json({
+      ok: true,
+      message: 'Stop requested in Jenkins.',
+      data: updatedRun
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message
+    });
+  }
+});
 
 function getModuleOr404(moduleId, res) {
   const moduleConfig = getModuleConfig(moduleId);
@@ -261,11 +308,15 @@ async function createRun(moduleConfig, params) {
     });
 
     monitorRun(moduleConfig, queuedRun.id).catch(error => {
+      const latestRun = runStore.get(queuedRun.module, queuedRun.id) || queuedRun;
+      const wasCancelled = latestRun.cancellationRequested || /cancelled|aborted|stopped/i.test(error.message);
+      const status = wasCancelled ? 'STOPPED' : 'FAILURE';
+
       runStore.update(queuedRun.module, queuedRun.id, {
-        status: 'FAILURE',
-        result: 'FAILURE',
+        status,
+        result: status,
         finishedAt: new Date().toISOString(),
-        lastError: error.message
+        lastError: wasCancelled ? null : error.message
       });
     });
 
@@ -377,12 +428,13 @@ async function monitorRun(moduleConfig, runId) {
 
     const buildInfo = await getBuildInfo(run);
     building = Boolean(buildInfo.building);
-    const status = normalizeStatus(buildInfo.result || (building ? 'RUNNING' : 'UNKNOWN'));
+    const jenkinsStatus = normalizeStatus(buildInfo.result || (building ? 'RUNNING' : 'UNKNOWN'));
+    const status = getRunStatusFromJenkins(run, jenkinsStatus, building);
 
     const patch = {
       status,
       result: status,
-      reports: buildReports(run)
+      reports: buildReports({ ...run, status })
     };
 
     if (!building) {
@@ -408,11 +460,12 @@ async function refreshRunFromJenkins(run) {
 
   try {
     const buildInfo = await getBuildInfo(run);
-    const status = normalizeStatus(buildInfo.result || (buildInfo.building ? 'RUNNING' : 'UNKNOWN'));
+    const jenkinsStatus = normalizeStatus(buildInfo.result || (buildInfo.building ? 'RUNNING' : 'UNKNOWN'));
+    const status = getRunStatusFromJenkins(run, jenkinsStatus, Boolean(buildInfo.building));
     const patch = {
       status,
       result: status,
-      reports: buildReports(run)
+      reports: buildReports({ ...run, status })
     };
 
     if (!buildInfo.building && !run.finishedAt) {
@@ -425,7 +478,56 @@ async function refreshRunFromJenkins(run) {
   }
 }
 
+
+function getRunStatusFromJenkins(run, jenkinsStatus, building) {
+  if (run.cancellationRequested && building) {
+    return 'STOPPING';
+  }
+
+  if (run.cancellationRequested && ['ABORTED', 'STOPPED'].includes(jenkinsStatus)) {
+    return 'STOPPED';
+  }
+
+  return jenkinsStatus;
+}
+
+async function stopRunInJenkins(run) {
+  if (run.buildNumber) {
+    await stopJenkinsBuild(run);
+    return;
+  }
+
+  if (run.queueId) {
+    await cancelJenkinsQueue(run.queueId);
+    return;
+  }
+
+  const error = new Error('Run does not have a Jenkins queue id or build number.');
+  error.statusCode = 409;
+  throw error;
+}
+
+async function stopJenkinsBuild(run) {
+  const crumbHeaders = await getJenkinsCrumb();
+
+  await axios.post(`${getJobUrl(run.jobName || run.config.jobName)}/${run.buildNumber}/stop`, null, {
+    auth: getJenkinsAuth(),
+    headers: { ...crumbHeaders },
+    validateStatus: status => status >= 200 && status < 400
+  });
+}
+
+async function cancelJenkinsQueue(queueId) {
+  const crumbHeaders = await getJenkinsCrumb();
+
+  await axios.post(`${getBaseUrl()}/queue/cancelItem?id=${encodeURIComponent(queueId)}`, null, {
+    auth: getJenkinsAuth(),
+    headers: { ...crumbHeaders },
+    validateStatus: status => status >= 200 && status < 400
+  });
+}
 async function waitForBuildNumber(moduleConfig, queueId) {
+
   const maxAttempts = 40;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

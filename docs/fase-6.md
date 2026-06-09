@@ -60,6 +60,7 @@ Payload ejemplo:
 GET /api/ply/runs/:runId/status
 GET /api/ply/runs/:runId/progress
 GET /api/ply/runs/:runId/reports
+POST /api/ply/runs/:runId/stop
 ```
 
 ## Archivos principales
@@ -111,8 +112,17 @@ La regla se aplica en tres capas:
 - `public/app.js`: filtra nuevamente antes de renderizar en pantalla.
 
 Esta misma regla debe mantenerse cuando se activen `usr`, `cms` y `gps`.
+## Cancelacion desde UI
+
+El dashboard puede solicitar la detencion del run activo con:
+
+```http
+POST /api/ply/runs/:runId/stop
+```
+
+Si el run aun esta en cola, el backend cancela el queue item de Jenkins. Si Jenkins ya asigno build, el backend llama el endpoint `/stop` del build. Newman corre dentro del Job Jenkins, por lo que detener el build corta el proceso `runners/ply.js` asociado a esa ejecucion.
+
 ## Pendiente para fases siguientes
 
-- Implementar stop/cancel modular por runId si se requiere desde UI.
 - Activar modulos `usr`, `cms` y `gps` con sus flujos reales.
 - Adaptar esta logica al HTML real de la empresa.

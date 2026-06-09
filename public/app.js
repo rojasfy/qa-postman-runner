@@ -7,6 +7,7 @@ let currentModule = 'ply';
 let currentRunId = null;
 let lastRun = null;
 let lastReports = null;
+let stoppingRunId = null;
 
 const form = document.getElementById('runForm');
 const moduleSelect = document.getElementById('moduleSelect');
@@ -54,6 +55,7 @@ form.addEventListener('submit', async event => {
     }
 
     renderRun(lastRun);
+    setRunningUi(true, lastRun.status || 'QUEUED');
     startLiveRefresh();
   } catch (error) {
     alert(error.message);
@@ -70,8 +72,35 @@ moduleSelect.addEventListener('change', async () => {
   await loadFlows(currentModule);
 });
 
-stopButton.addEventListener('click', () => {
-  alert('La detencion desde UI no esta implementada en FASE 6. Deten el build desde Jenkins si es necesario.');
+stopButton.addEventListener('click', async () => {
+  if (!currentModule || !currentRunId || !lastRun || isFinal(lastRun.status)) {
+    return;
+  }
+
+  const confirmStop = confirm('Deseas detener la ejecucion actual en Jenkins?');
+  if (!confirmStop) return;
+
+  stoppingRunId = currentRunId;
+  setRunningUi(true, 'STOPPING');
+
+  try {
+    const response = await fetch(`/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/stop`, {
+      method: 'POST'
+    });
+    const data = await response.json();
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || 'No se pudo detener la ejecucion.');
+    }
+
+    lastRun = data.data || lastRun;
+    renderRun(lastRun);
+    await refreshRun();
+  } catch (error) {
+    alert(error.message);
+    stoppingRunId = null;
+    setRunningUi(!isFinal(lastRun?.status), lastRun?.status || 'RUNNING');
+  }
 });
 
 clearButton.addEventListener('click', () => {
@@ -225,6 +254,7 @@ async function refreshRun() {
     renderReportLinks({ ...lastRun, reports: lastReports });
 
     if (isFinal(lastRun.status)) {
+      stoppingRunId = null;
       setRunningUi(false, lastRun.status);
       stopLiveRefresh();
     } else {
@@ -253,12 +283,15 @@ function mergeRunProgress(run, progress) {
 }
 
 function setRunningUi(isRunning, status = null) {
+  const normalized = String(status || '').toUpperCase();
+  const isStopping = normalized === 'STOPPING' || stoppingRunId === currentRunId;
+
   runButton.disabled = isRunning || flowSelect.disabled;
-  stopButton.disabled = true;
+  stopButton.disabled = !isRunning || isStopping || !currentRunId;
   clearButton.disabled = false;
 
   runButton.innerHTML = isRunning ? '...' : '&#9654;';
-  stopButton.innerHTML = '&#9632;';
+  stopButton.innerHTML = isStopping ? '...' : '&#9632;';
 
   if (status) {
     jobStatus.className = `pill ${statusToPillClass(status)}`;
@@ -524,6 +557,7 @@ function statusToPillClass(status = '') {
   if (['SUCCESS', 'PASSED'].includes(normalized)) return 'pill-passed';
   if (['FAILURE', 'FAILED'].includes(normalized)) return 'pill-failed';
   if (['RUNNING', 'QUEUED', 'BUILDING'].includes(normalized)) return 'pill-running';
+  if (['STOPPING'].includes(normalized)) return 'pill-stopped';
   if (['STOPPED', 'ABORTED'].includes(normalized)) return 'pill-stopped';
   if (['CLEARED'].includes(normalized)) return 'pill-muted';
 

@@ -138,6 +138,7 @@ GET  /api/ply/runs/:runId/status
 GET  /api/ply/runs/:runId/progress
 POST /api/ply/runs/:runId/progress
 GET  /api/ply/runs/:runId/reports
+POST /api/ply/runs/:runId/stop
 ```
 
 Payload ejemplo para crear run:
