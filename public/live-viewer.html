@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>QA Postman Runner - PLAYER</title>
+  <title>QA Postman Runner - Modular</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -22,8 +22,8 @@
     <header class="hero">
       <div>
         <p class="eyebrow">QA POSTMAN RUNNER</p>
-        <h1>Regresión PLAYER</h1>
-        <p class="subtitle">Ejecución vía Jenkins con progreso en vivo desde <code>reports/live-progress.json</code></p>
+        <h1>Regresion Modular</h1>
+        <p class="subtitle">Ejecucion via Jenkins con runs modulares y progreso por <code>runId</code></p>
       </div>
       <div class="status-stack">
         <span id="serverStatus" class="pill pill-muted">SERVER: --</span>
@@ -33,6 +33,20 @@
 
     <section class="panel form-panel">
       <form id="runForm" class="run-form">
+        <label>
+          <span>module</span>
+          <select id="moduleSelect" name="module" required>
+            <option value="ply" selected>PLY</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Flujo</span>
+          <select id="flowSelect" name="flow" required>
+            <option value="">Cargando...</option>
+          </select>
+        </label>
+
         <label>
           <span>environment</span>
           <select name="environment" required>
@@ -104,18 +118,14 @@
           </select>
         </label>
 
-        <label>
-          <span>folder</span>
-          <input name="folder" value="Getmedia" required />
-        </label>
 
         <div class="actions-bar">
           <span class="actions-title">ACCIONES</span>
-          <button id="runButton" type="submit" class="action-btn action-run" title="Ejecutar regresión">▶</button>
-          <button id="stopButton" type="button" class="action-btn action-stop" title="Detener ejecución"
-            disabled>■</button>
-          <button id="clearButton" type="button" class="action-btn action-clear" title="Limpiar resultados">⌫</button>
-          <button id="refreshButton" type="button" class="action-btn action-refresh" title="Actualizar">↻</button>
+          <button id="runButton" type="submit" class="action-btn action-run" title="Ejecutar regresion">&#9654;</button>
+          <button id="stopButton" type="button" class="action-btn action-stop" title="Detener ejecucion"
+            disabled>&#9632;</button>
+          <button id="clearButton" type="button" class="action-btn action-clear" title="Limpiar resultados">&#9003;</button>
+          <button id="refreshButton" type="button" class="action-btn action-refresh" title="Actualizar">&#8635;</button>
         </div>
       </form>
     </section>
@@ -209,7 +219,7 @@
         </details>
 
         <details>
-          <summary>Parámetros</summary>
+          <summary>Parametros</summary>
           <pre id="parametersPanel">{}</pre>
         </details>
       </section>

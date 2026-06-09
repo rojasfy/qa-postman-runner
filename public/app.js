@@ -1,11 +1,16 @@
 const RUN_INTERVAL_MS = 1500;
+const FINAL_STATUSES = ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED', 'CLEARED', 'UNKNOWN'];
 
 let selectedApiId = null;
 let refreshTimer = null;
-let lastProgress = null;
-let lastExecution = null;
+let currentModule = 'ply';
+let currentRunId = null;
+let lastRun = null;
+let lastReports = null;
 
 const form = document.getElementById('runForm');
+const moduleSelect = document.getElementById('moduleSelect');
+const flowSelect = document.getElementById('flowSelect');
 const runButton = document.getElementById('runButton');
 const stopButton = document.getElementById('stopButton');
 const clearButton = document.getElementById('clearButton');
@@ -19,16 +24,19 @@ form.addEventListener('submit', async event => {
   event.preventDefault();
 
   const payload = Object.fromEntries(new FormData(form).entries());
+  const moduleId = payload.module;
+  delete payload.module;
+
+  selectedApiId = null;
+  currentModule = moduleId;
 
   setRunningUi(true, 'QUEUED');
-  runButton.textContent = '...';
+  clearDashboardView('Run enviado a Jenkins. Esperando progreso...');
 
   try {
-    const response = await fetch('/run/player', {
+    const response = await fetch(`/api/${encodeURIComponent(moduleId)}/runs`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
@@ -38,79 +46,125 @@ form.addEventListener('submit', async event => {
       throw new Error(data.message || 'Could not trigger Jenkins job.');
     }
 
-    renderJobStatus(data.execution);
+    currentRunId = data.data?.id;
+    lastRun = data.data || null;
+
+    if (!currentRunId) {
+      throw new Error('Backend did not return a run id.');
+    }
+
+    renderRun(lastRun);
     startLiveRefresh();
   } catch (error) {
     alert(error.message);
     setRunningUi(false);
+    renderJobStatus({ status: 'FAILURE', lastError: error.message });
   }
 });
 
-stopButton.addEventListener('click', async () => {
-  const confirmStop = confirm('¿Deseas detener la ejecución PLAYER actual?');
-
-  if (!confirmStop) return;
-
-  stopButton.disabled = true;
-  stopButton.textContent = '...';
-
-  try {
-    const response = await fetch('/stop/player', { method: 'POST' });
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.message || 'No se pudo detener la ejecución.');
-    }
-
-    renderJobStatus(data.execution);
-    await refreshLiveProgress();
-    setRunningUi(false);
-  } catch (error) {
-    alert(error.message);
-  } finally {
-    stopButton.textContent = '■';
-  }
+moduleSelect.addEventListener('change', async () => {
+  currentModule = moduleSelect.value;
+  currentRunId = null;
+  stopLiveRefresh();
+  clearDashboardView();
+  await loadFlows(currentModule);
 });
 
-clearButton.addEventListener('click', async () => {
-  const confirmClear = confirm('¿Deseas limpiar los resultados renderizados?');
+stopButton.addEventListener('click', () => {
+  alert('La detencion desde UI no esta implementada en FASE 6. Deten el build desde Jenkins si es necesario.');
+});
 
-  if (!confirmClear) return;
-
-  try {
-    const response = await fetch('/clear/player', { method: 'POST' });
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.message || 'No se pudieron limpiar los resultados.');
-    }
-
-    selectedApiId = null;
-    lastProgress = null;
-
-    await refreshStatus();
-    await refreshLiveProgress();
-    clearDashboardView();
-  } catch (error) {
-    alert(error.message);
-  }
+clearButton.addEventListener('click', () => {
+  stopLiveRefresh();
+  selectedApiId = null;
+  currentRunId = null;
+  lastRun = null;
+  lastReports = null;
+  clearDashboardView('Resultados limpiados.');
+  renderJobStatus(null);
+  setRunningUi(false);
 });
 
 refreshButton.addEventListener('click', async () => {
-  await refreshStatus();
-  await refreshLiveProgress();
+  if (currentRunId) {
+    await refreshRun();
+  } else {
+    await refreshLatestRun();
+  }
 });
+
+async function initDashboard() {
+  try {
+    await loadModules();
+    await loadFlows(currentModule);
+    await refreshLatestRun();
+    serverStatus.textContent = 'SERVER: OK / FASE 6';
+    serverStatus.className = 'pill pill-passed';
+  } catch (error) {
+    serverStatus.textContent = 'SERVER: ERROR';
+    serverStatus.className = 'pill pill-failed';
+    console.error(error);
+  }
+}
+
+async function loadModules() {
+  const response = await fetch('/api/modules?cache=' + Date.now());
+  const data = await response.json();
+
+  if (!response.ok || !data.ok) {
+    throw new Error(data.message || 'Could not load modules.');
+  }
+
+  const modules = data.data || [];
+  moduleSelect.innerHTML = modules.map(module => {
+    const selected = module.id === currentModule ? ' selected' : '';
+    const disabled = module.enabled ? '' : ' disabled';
+    const suffix = module.enabled ? '' : ' (pendiente)';
+    return `<option value="${escapeHtml(module.id)}"${selected}${disabled}>${escapeHtml(module.label + suffix)}</option>`;
+  }).join('');
+
+  if (!modules.some(module => module.id === currentModule && module.enabled)) {
+    const firstEnabled = modules.find(module => module.enabled);
+    currentModule = firstEnabled?.id || 'ply';
+    moduleSelect.value = currentModule;
+  }
+}
+
+async function loadFlows(moduleId) {
+  flowSelect.disabled = true;
+  flowSelect.innerHTML = '<option value="">Cargando...</option>';
+
+  const response = await fetch(`/api/${encodeURIComponent(moduleId)}/flows?cache=${Date.now()}`);
+  const data = await response.json();
+
+  if (!response.ok || !data.ok) {
+    flowSelect.innerHTML = '<option value="">Sin flujos</option>';
+    runButton.disabled = true;
+    throw new Error(data.message || 'Could not load flows.');
+  }
+
+  const flows = data.data || [];
+
+  if (!data.enabled || flows.length === 0) {
+    flowSelect.innerHTML = '<option value="">Modulo no operativo</option>';
+    flowSelect.disabled = true;
+    runButton.disabled = true;
+    return;
+  }
+
+  flowSelect.innerHTML = flows.map(flow => (
+    `<option value="${escapeHtml(flow.id)}">${escapeHtml(flow.label || flow.folderName || flow.id)}</option>`
+  )).join('');
+
+  flowSelect.disabled = false;
+  runButton.disabled = false;
+}
 
 function startLiveRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
 
-  refreshStatus();
-  refreshLiveProgress();
-
-  refreshTimer = setInterval(async () => {
-    await refreshStatus();
-    await refreshLiveProgress();
-  }, RUN_INTERVAL_MS);
+  refreshRun();
+  refreshTimer = setInterval(refreshRun, RUN_INTERVAL_MS);
 }
 
 function stopLiveRefresh() {
@@ -119,64 +173,89 @@ function stopLiveRefresh() {
     refreshTimer = null;
   }
 }
-async function refreshStatus() {
+
+async function refreshLatestRun() {
   try {
-    const response = await fetch('/status?cache=' + Date.now());
+    const response = await fetch(`/api/${encodeURIComponent(currentModule)}/runs?cache=${Date.now()}`);
     const data = await response.json();
 
-    serverStatus.textContent = `SERVER: ${data.server || 'OK'} / ${data.mode || '--'}`;
-    lastExecution = data.execution || null;
-    renderJobStatus(data.execution);
-    renderReportLinks(data.execution);
+    if (!response.ok || !data.ok) return;
 
-    const isRunning = data.execution?.running === true;
-    const result = data.execution?.result;
-    setRunningUi(isRunning, result);
+    const latestRun = (data.data || [])[0];
+    if (!latestRun) {
+      renderJobStatus(null);
+      renderReportLinks({});
+      return;
+    }
 
-    if (!isRunning && ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED'].includes(String(result).toUpperCase())) {
+    currentRunId = latestRun.id;
+    lastRun = latestRun;
+    renderRun(latestRun);
+
+    if (!isFinal(latestRun.status)) {
+      startLiveRefresh();
+    }
+  } catch (error) {
+    console.error('Error loading latest run', error);
+  }
+}
+
+async function refreshRun() {
+  if (!currentModule || !currentRunId) return;
+
+  try {
+    const [statusResponse, progressResponse, reportsResponse] = await Promise.all([
+      fetch(`/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/status?cache=${Date.now()}`),
+      fetch(`/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/progress?cache=${Date.now()}`),
+      fetch(`/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/reports?cache=${Date.now()}`)
+    ]);
+
+    const statusData = await statusResponse.json();
+    const progressData = await progressResponse.json();
+    const reportsData = await reportsResponse.json();
+
+    if (!statusResponse.ok || !statusData.ok) {
+      throw new Error(statusData.message || 'Could not refresh run status.');
+    }
+
+    lastRun = mergeRunProgress(statusData.data, progressData.ok ? progressData.data : null);
+    lastReports = reportsData.ok ? reportsData.data : lastRun.reports;
+
+    renderRun(lastRun);
+    renderReportLinks({ ...lastRun, reports: lastReports });
+
+    if (isFinal(lastRun.status)) {
+      setRunningUi(false, lastRun.status);
       stopLiveRefresh();
+    } else {
+      setRunningUi(true, lastRun.status);
     }
   } catch (error) {
     serverStatus.textContent = 'SERVER: ERROR';
     serverStatus.className = 'pill pill-failed';
+    console.error('Error refreshing run', error);
   }
 }
 
-async function refreshLiveProgress() {
-  try {
-    const response = await fetch('/reports/live-progress.json?cache=' + Date.now());
+function mergeRunProgress(run, progress) {
+  if (!progress) return run;
 
-    if (!response.ok) return;
-
-    const progress = await response.json();
-    lastProgress = progress;
-
-    renderExecution(progress.execution || {});
-    renderSummary(progress.summary || {});
-    renderParameters(progress.parameters || {});
-    renderApis(progress.apis || []);
-    renderReportLinks({
-      result: progress.execution?.status,
-      buildNumber: progress.execution?.buildNumber,
-      reports: lastExecution?.reports,
-      reportLinks: lastExecution?.reportLinks
-    });
-
-    const finalStatuses = ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED', 'CLEARED'];
-    const status = progress.execution?.status;
-
-    if (finalStatuses.includes(status)) {
-      setRunningUi(false, status);
-    }
-  } catch (error) {
-    console.error('Error reading live-progress.json', error);
-  }
+  return {
+    ...run,
+    status: progress.status || run.status,
+    summary: progress.summary || run.summary,
+    apiExecutions: progress.apiExecutions || run.apiExecutions,
+    executionSteps: progress.executionSteps || run.executionSteps,
+    qaConsole: progress.qaConsole || run.qaConsole,
+    startedAt: progress.startedAt || run.startedAt,
+    finishedAt: progress.finishedAt || run.finishedAt
+  };
 }
 
 function setRunningUi(isRunning, status = null) {
-  runButton.disabled = isRunning;
-  stopButton.disabled = !isRunning;
-  clearButton.disabled = isRunning;
+  runButton.disabled = isRunning || flowSelect.disabled;
+  stopButton.disabled = true;
+  clearButton.disabled = false;
 
   runButton.textContent = isRunning ? '...' : '▶';
   stopButton.textContent = '■';
@@ -186,32 +265,52 @@ function setRunningUi(isRunning, status = null) {
   }
 }
 
-function renderJobStatus(execution) {
-  if (!execution) {
+function renderRun(run) {
+  if (!run) {
+    renderJobStatus(null);
+    renderExecution({});
+    renderSummary({});
+    renderParameters({});
+    renderApis([]);
+    renderReportLinks({});
+    return;
+  }
+
+  renderJobStatus(run);
+  renderExecution(run);
+  renderSummary(run.summary || {});
+  renderParameters(run.config || {});
+  renderApis(run.apiExecutions || []);
+  renderReportLinks(run);
+}
+
+function renderJobStatus(run) {
+  if (!run) {
     jobStatus.textContent = 'JENKINS: IDLE';
     jobStatus.className = 'pill pill-muted';
     return;
   }
 
-  const result = execution.result || 'IDLE';
-  const buildNumber = execution.buildNumber ? ` #${execution.buildNumber}` : '';
+  const result = run.status || run.result || 'IDLE';
+  const buildNumber = run.buildNumber ? ` #${run.buildNumber}` : '';
+  const runSuffix = run.id ? ` / ${run.id.slice(0, 8)}` : '';
 
-  jobStatus.textContent = `JENKINS: ${result}${buildNumber}`;
+  jobStatus.textContent = `JENKINS: ${result}${buildNumber}${runSuffix}`;
   jobStatus.className = `pill ${statusToPillClass(result)}`;
 }
 
-function renderReportLinks(execution = {}) {
+function renderReportLinks(run = {}) {
   if (!reportLinks || !reportSyncStatus) return;
 
-  const result = String(execution.result || execution.status || '').toUpperCase();
-  const reports = execution.reports || {};
-  const links = execution.reportLinks || reports.reportLinks || {};
-  const hasBuild = Boolean(execution.buildNumber);
-  const isFinal = ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED'].includes(result);
+  const result = String(run.status || run.result || '').toUpperCase();
+  const reports = run.reports || {};
+  const links = reports.links || {};
+  const hasBuild = Boolean(run.buildNumber);
+  const isFinalStatus = isFinal(result);
 
   reportSyncStatus.textContent = reports.syncedAt
     ? `SYNC ${formatDate(reports.syncedAt)}`
-    : (hasBuild ? `BUILD #${execution.buildNumber}` : '--');
+    : (hasBuild ? `BUILD #${run.buildNumber}` : '--');
 
   if (!hasBuild) {
     reportLinks.innerHTML = '<div class="empty-state">Los enlaces se habilitan cuando Jenkins asigna un build.</div>';
@@ -220,9 +319,9 @@ function renderReportLinks(execution = {}) {
 
   const items = [
     { label: 'Build Jenkins', href: links.jenkinsBuild },
-    { label: 'Live progress', href: links.liveProgress || '/reports/live-progress.json' },
-    { label: 'Newman HTML', href: links.newmanHtml || '/reports/newman-report.html', disabled: !isFinal && !reports.newmanReport },
-    { label: 'Newman JSON', href: links.newmanJson || '/reports/newman-result.json', disabled: !isFinal && !reports.newmanResult }
+    { label: 'Live progress', href: links.jenkinsLiveProgress },
+    { label: 'Newman HTML', href: links.jenkinsNewmanHtml, disabled: !isFinalStatus && !reports.newmanReport },
+    { label: 'Newman JSON', href: links.jenkinsNewmanJson, disabled: !isFinalStatus && !reports.newmanResult }
   ];
 
   reportLinks.innerHTML = items.map(item => {
@@ -233,11 +332,12 @@ function renderReportLinks(execution = {}) {
     return `<a class="report-link" href="${escapeHtml(item.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.label)}</a>`;
   }).join('');
 }
-function renderExecution(execution) {
-  document.getElementById('metricCollection').textContent = execution.collection || '--';
-  document.getElementById('metaStarted').textContent = formatDate(execution.startedAt);
-  document.getElementById('metaFinished').textContent = formatDate(execution.finishedAt);
-  document.getElementById('metaDuration').textContent = formatDuration(execution.durationMs);
+
+function renderExecution(run) {
+  document.getElementById('metricCollection').textContent = run.collection || run.config?.moduleLabel || '--';
+  document.getElementById('metaStarted').textContent = formatDate(run.startedAt);
+  document.getElementById('metaFinished').textContent = formatDate(run.finishedAt);
+  document.getElementById('metaDuration').textContent = formatDuration(getDurationMs(run));
 }
 
 function renderSummary(summary) {
@@ -259,7 +359,7 @@ function renderApis(apis) {
   apiList.innerHTML = '';
 
   if (!apis.length) {
-    apiList.innerHTML = '<div class="empty-state">Sin APIs ejecutadas todavía.</div>';
+    apiList.innerHTML = '<div class="empty-state">Sin APIs ejecutadas todavia.</div>';
     clearDetail();
     return;
   }
@@ -278,8 +378,8 @@ function renderApis(apis) {
       <span class="api-name">${escapeHtml(api.name || 'Unnamed API')}</span>
       <span class="api-meta">
         <span>${escapeHtml(api.method || '--')}</span>
-        <span>${api.statusCode || '--'}</span>
-        <span>${api.responseTime || '--'} ms</span>
+        <span>${api.statusCode || api.response?.statusCode || '--'}</span>
+        <span>${api.responseTime || api.response?.timeMs || '--'} ms</span>
       </span>
       <span class="pill ${statusToPillClass(api.status)}">${escapeHtml(api.status || '--')}</span>
     `;
@@ -336,8 +436,8 @@ function renderAssertions(assertions) {
   });
 }
 
-function clearDashboardView() {
-  document.getElementById('apiList').innerHTML = '<div class="empty-state">Resultados limpiados.</div>';
+function clearDashboardView(message = 'Sin APIs ejecutadas todavia.') {
+  document.getElementById('apiList').innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
   document.getElementById('apiCounter').textContent = '0';
   document.getElementById('metricCollection').textContent = '--';
   document.getElementById('metricTotal').textContent = '0';
@@ -366,6 +466,17 @@ function clearDetail() {
 
 function getApiId(api) {
   return String(api.id || api.itemId || `${api.name}-${api.executedAt}`);
+}
+
+function isFinal(status = '') {
+  return FINAL_STATUSES.includes(String(status).toUpperCase());
+}
+
+function getDurationMs(run = {}) {
+  if (run.durationMs || run.durationMs === 0) return run.durationMs;
+  if (!run.startedAt || !run.finishedAt) return null;
+
+  return new Date(run.finishedAt) - new Date(run.startedAt);
 }
 
 function pretty(value) {
@@ -421,5 +532,4 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-refreshStatus();
-refreshLiveProgress();
+initDashboard();

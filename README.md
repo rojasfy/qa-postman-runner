@@ -1,10 +1,10 @@
-﻿# QA Postman Runner
+# QA Postman Runner
 
-API local/CI para ejecutar regresiones API de Postman con Jenkins y Newman, usando un modelo de runs por `runId`.
+Dashboard/API local para ejecutar regresiones API de Postman con Jenkins y Newman, usando un modelo modular de runs por `runId`.
 
 ## Estado actual
 
-La FASE 5 trabaja como una version nueva e independiente del prototipo anterior.
+La FASE 6 conecta el dashboard visual actual con la API modular creada en FASE 5.
 
 ```text
 Version vieja clonada:
@@ -12,7 +12,7 @@ Version vieja clonada:
   Jenkins Job: player
   Jenkinsfile: jenkins/Jenkinsfile.player
 
-Version FASE 5:
+Version FASE 6:
   rutas: /api/ply/runs, /api/ply/runs/:runId/status, /api/ply/runs/:runId/reports
   Jenkins Job: PLY
   Jenkinsfile: jenkins/Jenkinsfile.ply
@@ -73,6 +73,7 @@ qa-postman-runner/
 |-- docs/
 |   |-- fase-4.md
 |   |-- fase-5.md
+|   |-- fase-6.md
 |   `-- optimizacion-tiempos.md
 |-- .env.example
 |-- .gitignore
@@ -119,13 +120,13 @@ POSTMAN_ENVIRONMENT_FILE=environments/PRE-UAT-PROD-CLAROVIDEO.postman_environmen
 RUN_STORE_LIMIT_PER_MODULE=50
 ```
 
-Levantar la API:
+Levantar el dashboard/API:
 
 ```bash
 npm run server
 ```
 
-## Endpoints FASE 5
+## Endpoints FASE 6
 
 ```http
 GET  /api/modules
@@ -187,3 +188,4 @@ docs/fase-4.md
 docs/fase-5.md
 docs/optimizacion-tiempos.md
 ```
+

@@ -1,6 +1,7 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 
 const express = require('express');
+const path = require('path');
 const os = require('os');
 const axios = require('axios');
 const cors = require('cors');
@@ -27,6 +28,11 @@ const JENKINS_DASHBOARD_BASE_URL = process.env.JENKINS_DASHBOARD_BASE_URL || get
 
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
+app.use('/public', express.static(path.join(__dirname, 'public')));
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'live-viewer.html'));
+});
 
 app.get('/api/modules', (req, res) => {
   res.json({ ok: true, data: listModules() });
@@ -544,6 +550,6 @@ function sleep(ms) {
 }
 
 app.listen(PORT, () => {
-  console.log(`QA Dashboard API running on http://localhost:${PORT}`);
-  console.log('Execution mode: JENKINS / FASE 5');
+  console.log(`QA Dashboard running on http://localhost:${PORT}`);
+  console.log('Execution mode: JENKINS / FASE 6');
 });
