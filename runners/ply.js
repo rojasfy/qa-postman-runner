@@ -1,4 +1,4 @@
-﻿const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
 const newman = require('newman');
 
@@ -195,6 +195,10 @@ function createInitialProgress(params) {
   };
 }
 
+function isVisibleServiceRequest(url) {
+  return String(url || '').toLowerCase().includes('/services/');
+}
+
 function updateSummary(progress) {
   progress.summary.total = progress.apis.length;
   progress.summary.passed = progress.apis.filter(api => api.status === 'PASSED').length;
@@ -261,6 +265,11 @@ async function run() {
       if (!request || !request.url) return;
 
       const url = request.url.toString();
+
+      if (!isVisibleServiceRequest(url)) {
+        return;
+      }
+
       const statusCode = response ? response.code : null;
       const apiStatus = error || statusCode >= 400 ? 'FAILED' : 'PASSED';
 

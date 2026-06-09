@@ -23,7 +23,7 @@ Version nueva:
 
 ## Cambios realizados
 
-- Se conserva el diseño visual general del dashboard.
+- Se conserva el diseno visual general del dashboard.
 - Se agrega selector de modulo.
 - Se agrega selector de flujo.
 - Al cargar el dashboard se consulta:
@@ -89,6 +89,28 @@ Dashboard HTML
   -> dashboard modular
 ```
 
+
+## Regla de renderizado visible
+
+El dashboard modular conserva el criterio de la version legacy: solo se muestran como APIs visibles las requests cuya URL o path pertenezca a `/services/`.
+
+```text
+Si la request pertenece a /services/:
+  se muestra en el dashboard
+
+Si la request no pertenece a /services/:
+  no se muestra como API ejecutada
+```
+
+Esto evita renderizar requests tecnicos o auxiliares usados durante la ejecucion, por ejemplo Elasticsearch, preparaciones, configuraciones, consultas internas o validaciones que no correspondan a servicios.
+
+La regla se aplica en tres capas:
+
+- `runners/ply.js`: no agrega al `live-progress.json` requests fuera de `/services/`.
+- `src/progressMapper.js`: filtra cualquier progreso recibido antes de guardar `apiExecutions`.
+- `public/app.js`: filtra nuevamente antes de renderizar en pantalla.
+
+Esta misma regla debe mantenerse cuando se activen `usr`, `cms` y `gps`.
 ## Pendiente para fases siguientes
 
 - Implementar stop/cancel modular por runId si se requiere desde UI.

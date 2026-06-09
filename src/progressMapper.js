@@ -1,4 +1,4 @@
-﻿const FINAL_STATUSES = new Set(['SUCCESS', 'FAILURE', 'ABORTED', 'STOPPED', 'CLEARED', 'UNKNOWN']);
+const FINAL_STATUSES = new Set(['SUCCESS', 'FAILURE', 'ABORTED', 'STOPPED', 'CLEARED', 'UNKNOWN']);
 
 function normalizeStatus(value) {
   const status = String(value || 'UNKNOWN').toUpperCase();
@@ -12,6 +12,11 @@ function normalizeStatus(value) {
 
 function isFinalStatus(status) {
   return FINAL_STATUSES.has(normalizeStatus(status));
+}
+
+function isVisibleServiceRequest(api) {
+  const value = api?.url || api?.path || '';
+  return String(value).toLowerCase().includes('/services/');
 }
 
 function mapApi(api) {
@@ -93,7 +98,7 @@ function buildQaConsole(progress, run, status) {
     });
   }
 
-  (progress.apis || []).slice(-30).forEach(api => {
+  (progress.apis || []).filter(isVisibleServiceRequest).slice(-30).forEach(api => {
     lines.push({
       timestamp: api.executedAt || new Date().toISOString(),
       level: normalizeStatus(api.status) === 'FAILURE' ? 'error' : 'info',
@@ -115,12 +120,12 @@ function buildQaConsole(progress, run, status) {
 function mapProgressToRun(progress, run) {
   const execution = progress.execution || {};
   const status = normalizeStatus(execution.status || run.status || 'RUNNING');
-  const apiExecutions = (progress.apis || []).map(mapApi);
+  const apiExecutions = (progress.apis || []).filter(isVisibleServiceRequest).map(mapApi);
   const summary = {
-    total: progress.summary?.total ?? apiExecutions.length,
-    passed: progress.summary?.passed ?? apiExecutions.filter(api => api.status === 'SUCCESS').length,
-    failed: progress.summary?.failed ?? apiExecutions.filter(api => api.status === 'FAILURE').length,
-    currentApi: progress.summary?.currentApi || null
+    total: apiExecutions.length,
+    passed: apiExecutions.filter(api => api.status === 'SUCCESS').length,
+    failed: apiExecutions.filter(api => api.status === 'FAILURE').length,
+    currentApi: apiExecutions.length ? apiExecutions[apiExecutions.length - 1].name : null
   };
 
   const finishedAt = execution.finishedAt || (isFinalStatus(status) ? run.finishedAt || new Date().toISOString() : null);

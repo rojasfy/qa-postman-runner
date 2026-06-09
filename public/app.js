@@ -257,8 +257,8 @@ function setRunningUi(isRunning, status = null) {
   stopButton.disabled = true;
   clearButton.disabled = false;
 
-  runButton.textContent = isRunning ? '...' : '▶';
-  stopButton.textContent = '■';
+  runButton.innerHTML = isRunning ? '...' : '&#9654;';
+  stopButton.innerHTML = '&#9632;';
 
   if (status) {
     jobStatus.className = `pill ${statusToPillClass(status)}`;
@@ -351,7 +351,14 @@ function renderParameters(parameters) {
   document.getElementById('parametersPanel').textContent = pretty(parameters);
 }
 
+function isVisibleServiceRequest(api) {
+  const value = api?.url || api?.path || '';
+  return String(value).toLowerCase().includes('/services/');
+}
+
 function renderApis(apis) {
+  apis = (apis || []).filter(isVisibleServiceRequest);
+
   const apiList = document.getElementById('apiList');
   const apiCounter = document.getElementById('apiCounter');
 
