@@ -40,7 +40,7 @@ pipeline {
                     }
 
                     if (!params.runId?.trim()) {
-                        error('Parameter runId is required. The backend must create the run before Jenkins starts.')
+                        echo('Parameter runId is empty. Jenkins will use a manual run id; backend live progress correlation only works when /api/ply/runs triggers the job.')
                     }
 
                     if (!params.collectionFile?.trim()) {
@@ -66,7 +66,7 @@ pipeline {
             steps {
                 dir("${env.PROJECT_DIR}") {
                     withEnv([
-                        "PLY_RUN_ID=${params.runId}",
+                        "PLY_RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
                         "PLY_FLOW=${params.flow}",
                         "PLY_FOLDER_NAME=${params.folderName}",
                         "PLY_COLLECTION_FILE=${params.collectionFile}",
@@ -151,7 +151,7 @@ pipeline {
             steps {
                 dir("${env.PROJECT_DIR}") {
                     withEnv([
-                        "PLY_RUN_ID=${params.runId}",
+                        "PLY_RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
                         "PLY_COLLECTION_FILE=${params.collectionFile}",
                         "PLY_ENVIRONMENT_FILE=${params.environmentFile}",
                         "PLY_FLOW=${params.flow}",
@@ -279,7 +279,7 @@ pipeline {
                         execution: {
                           status: "FAILURE",
                           module: "ply",
-                          runId: process.env.runId || null,
+                          runId: process.env.runId || process.env.BUILD_TAG || null,
                           collection: "REGRESIVOS",
                           buildNumber: process.env.BUILD_NUMBER,
                           startedAt: null,
