@@ -122,17 +122,48 @@ pipeline {
                             set -eu
 
                             publish_live_progress() {
-                              progress_mode="${1:-filtered}"
-                              progress_timeout_ms="${2:-3000}"
-
                               if [ -z "${DASHBOARD_BASE_URL:-}" ] || [ -z "${MODULE_ID:-}" ] || [ -z "${RUN_ID:-}" ] || [ ! -f reports/live-progress.json ]; then
                                 return 0
                               fi
 
-                              LIVE_PROGRESS_MODE="$progress_mode" \
-                              LIVE_PROGRESS_TIMEOUT_MS="$progress_timeout_ms" \
+                              DASHBOARD_LIVE_PROGRESS_URL="${DASHBOARD_BASE_URL%/}/api/${MODULE_ID}/runs/${RUN_ID}/progress"
+                              echo "[LIVE-PROGRESS] Publishing to ${DASHBOARD_LIVE_PROGRESS_URL}"
+
+                              DASHBOARD_LIVE_PROGRESS_URL="$DASHBOARD_LIVE_PROGRESS_URL" \
                               LIVE_PROGRESS_FILE="reports/live-progress.json" \
-                              node runners/publish-progress.js || true
+                              LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
+                              node -e '
+                                const fs = require("fs");
+                                const http = require("http");
+                                const https = require("https");
+                                const target = process.env.DASHBOARD_LIVE_PROGRESS_URL;
+                                const file = process.env.LIVE_PROGRESS_FILE;
+                                const timeoutMs = Number(process.env.LIVE_PROGRESS_TIMEOUT_MS || 10000);
+
+                                if (!target || !fs.existsSync(file)) process.exit(0);
+
+                                const body = fs.readFileSync(file);
+                                const url = new URL(target);
+                                const client = url.protocol === "https:" ? https : http;
+                                const request = client.request(url, {
+                                  method: "POST",
+                                  hostname: url.hostname,
+                                  port: url.port,
+                                  path: `${url.pathname}${url.search}`,
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                    "Content-Length": body.length
+                                  }
+                                }, response => {
+                                  response.resume();
+                                  response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 300 ? 0 : 1));
+                                });
+
+                                request.on("error", error => { console.error("[LIVE-PROGRESS] " + error.message); process.exit(0); });
+                                request.write(body);
+                                request.end();
+                                setTimeout(() => process.exit(0), timeoutMs);
+                              ' || echo "[LIVE-PROGRESS] publish request failed"
                             }
 
                             node runners/modular.js \
@@ -153,7 +184,7 @@ pipeline {
                             runner_pid=$!
 
                             while kill -0 "$runner_pid" 2>/dev/null; do
-                              publish_live_progress "${LIVE_PROGRESS_MODE:-filtered}" "${LIVE_PROGRESS_TIMEOUT_MS:-10000}"
+                              publish_live_progress
                               sleep 2
                             done
 
@@ -162,7 +193,7 @@ pipeline {
                             runner_status=$?
                             set -e
 
-                            publish_live_progress "${LIVE_PROGRESS_MODE:-filtered}" "${LIVE_PROGRESS_TIMEOUT_MS:-10000}"
+                            publish_live_progress
                             exit "$runner_status"
                         '''
                     }
@@ -196,10 +227,7 @@ pipeline {
                             fs.writeFileSync(path, JSON.stringify(data, null, 2));
                           '
 
-                          LIVE_PROGRESS_MODE="${LIVE_PROGRESS_MODE:-filtered}" \
-                          LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
-                          LIVE_PROGRESS_FILE="reports/live-progress.json" \
-                          node runners/publish-progress.js || true
+                          echo "[LIVE-PROGRESS] Final progress stored as Jenkins artifact."
                         fi
                     '''
                 }
@@ -248,10 +276,7 @@ pipeline {
                           fs.writeFileSync(path, JSON.stringify(data, null, 2));
                         '
 
-                        LIVE_PROGRESS_MODE="${LIVE_PROGRESS_MODE:-filtered}" \
-                        LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
-                        LIVE_PROGRESS_FILE="reports/live-progress.json" \
-                        node runners/publish-progress.js || true
+                        echo "[LIVE-PROGRESS] Final progress stored as Jenkins artifact."
                     '''
                 }
             }
@@ -283,10 +308,7 @@ pipeline {
                             fs.writeFileSync(path, JSON.stringify(data, null, 2));
                           '
 
-                          LIVE_PROGRESS_MODE="${LIVE_PROGRESS_MODE:-filtered}" \
-                          LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
-                          LIVE_PROGRESS_FILE="reports/live-progress.json" \
-                          node runners/publish-progress.js || true
+                          echo "[LIVE-PROGRESS] Final progress stored as Jenkins artifact."
                         fi
                     '''
                 }
