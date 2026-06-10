@@ -178,34 +178,38 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
     });
   }
 
-  const patch = mapProgressToRun(progress, run);
-  const buildNumber = progress.execution?.buildNumber || run.buildNumber;
-
-  const updatedRun = runStore.update(run.module, run.id, {
-    ...patch,
-    buildNumber,
-    buildUrl: buildNumber ? `${getJobUrl(run.jobName)}/${buildNumber}/` : run.buildUrl,
-    reports: {
-      ...run.reports,
-      ...patch.reports,
-      links: buildReportLinks({ ...run, ...patch, buildNumber })
+  res.status(202).json({
+    ok: true,
+    data: {
+      id: run.id,
+      module: run.module,
+      accepted: true,
+      bytes: bodySize
     }
   });
 
-  console.log(
-    `[LIVE-PROGRESS] processed ${run.module}/${run.id} status=${updatedRun.status} build=${updatedRun.buildNumber || '--'} apis=${updatedRun.apiExecutions?.length || 0} durationMs=${Date.now() - startedAtMs}`
-  );
+  setImmediate(() => {
+    try {
+      const latestRun = runStore.get(run.module, run.id) || run;
+      const patch = mapProgressToRun(progress, latestRun);
+      const buildNumber = progress.execution?.buildNumber || latestRun.buildNumber;
 
-  res.json({
-    ok: true,
-    data: {
-      id: updatedRun.id,
-      module: updatedRun.module,
-      status: updatedRun.status,
-      buildNumber: updatedRun.buildNumber || null,
-      summary: updatedRun.summary,
-      apiExecutionsCount: updatedRun.apiExecutions?.length || 0,
-      syncedAt: updatedRun.reports?.syncedAt || updatedRun.updatedAt || new Date().toISOString()
+      const updatedRun = runStore.update(latestRun.module, latestRun.id, {
+        ...patch,
+        buildNumber,
+        buildUrl: buildNumber ? `${getJobUrl(latestRun.jobName)}/${buildNumber}/` : latestRun.buildUrl,
+        reports: {
+          ...latestRun.reports,
+          ...patch.reports,
+          links: buildReportLinks({ ...latestRun, ...patch, buildNumber })
+        }
+      });
+
+      console.log(
+        `[LIVE-PROGRESS] processed ${latestRun.module}/${latestRun.id} status=${updatedRun.status} build=${updatedRun.buildNumber || '--'} apis=${updatedRun.apiExecutions?.length || 0} durationMs=${Date.now() - startedAtMs}`
+      );
+    } catch (error) {
+      console.warn(`[LIVE-PROGRESS] processing failed for ${run.module}/${run.id}: ${error.message}`);
     }
   });
 });
