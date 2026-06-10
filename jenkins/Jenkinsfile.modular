@@ -121,6 +121,57 @@ pipeline {
                         sh '''
                             set -eu
 
+                            probe_dashboard_url() {
+                              if [ -z "${1:-}" ]; then
+                                return 1
+                              fi
+
+                              DASHBOARD_PROBE_URL="${1%/}/api/modules" node -e '
+                                const http = require("http");
+                                const https = require("https");
+                                const target = process.env.DASHBOARD_PROBE_URL;
+                                const url = new URL(target);
+                                const client = url.protocol === "https:" ? https : http;
+                                const request = client.request(url, {
+                                  method: "GET",
+                                  hostname: url.hostname,
+                                  port: url.port,
+                                  path: `${url.pathname}${url.search}`
+                                }, response => {
+                                  response.resume();
+                                  response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 500 ? 0 : 1));
+                                });
+
+                                request.setTimeout(2000, () => request.destroy(new Error("timeout")));
+                                request.on("error", () => process.exit(1));
+                                request.end();
+                              '
+                            }
+
+                            resolve_dashboard_base_url() {
+                              primary="${DASHBOARD_BASE_URL%/}"
+                              fallback="http://host.docker.internal:3000"
+
+                              if probe_dashboard_url "$primary"; then
+                                DASHBOARD_BASE_URL="$primary"
+                                export DASHBOARD_BASE_URL
+                                echo "[LIVE-PROGRESS] Dashboard reachable at ${DASHBOARD_BASE_URL}"
+                                return 0
+                              fi
+
+                              echo "[LIVE-PROGRESS] WARN dashboard not reachable at ${primary}"
+
+                              if [ "$primary" != "$fallback" ] && probe_dashboard_url "$fallback"; then
+                                DASHBOARD_BASE_URL="$fallback"
+                                export DASHBOARD_BASE_URL
+                                echo "[LIVE-PROGRESS] Dashboard reachable using fallback ${DASHBOARD_BASE_URL}"
+                                return 0
+                              fi
+
+                              echo "[LIVE-PROGRESS] WARN dashboard is not reachable from Jenkins; live updates will rely on artifact sync"
+                              return 0
+                            }
+
                             publish_live_progress() {
                               if [ -z "${DASHBOARD_BASE_URL:-}" ] || [ -z "${MODULE_ID:-}" ] || [ -z "${RUN_ID:-}" ] || [ ! -f reports/live-progress.json ]; then
                                 return 0
@@ -267,6 +318,8 @@ pipeline {
                                 setTimeout(() => process.exit(0), timeoutMs);
                               ' || echo "[LIVE-PROGRESS] publish request failed"
                             }
+
+                            resolve_dashboard_base_url
 
                             node runners/modular.js \
                               --module "$MODULE_ID" \
