@@ -20,6 +20,7 @@ const app = express();
 const runStore = new RunStore({ limitPerModule: Number(process.env.RUN_STORE_LIMIT_PER_MODULE || 50) });
 
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 const JENKINS_BASE_URL = process.env.JENKINS_BASE_URL;
 const JENKINS_USER = process.env.JENKINS_USER;
 const JENKINS_API_TOKEN = process.env.JENKINS_API_TOKEN;
@@ -805,7 +806,8 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(`QA Dashboard running on http://localhost:${PORT}`);
+  console.log(`QA Dashboard listening on http://${HOST}:${PORT}`);
   console.log('Execution mode: JENKINS / FASE 7 MODULAR');
 });

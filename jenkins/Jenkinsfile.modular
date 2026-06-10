@@ -126,12 +126,14 @@ pipeline {
                                 return 1
                               fi
 
+                              echo "[LIVE-PROGRESS] Probing ${1%/}/api/modules"
                               DASHBOARD_PROBE_URL="${1%/}/api/modules" node -e '
                                 const http = require("http");
                                 const https = require("https");
                                 const target = process.env.DASHBOARD_PROBE_URL;
                                 const url = new URL(target);
                                 const client = url.protocol === "https:" ? https : http;
+                                const timeout = setTimeout(() => process.exit(1), 2000);
                                 const request = client.request(url, {
                                   method: "GET",
                                   hostname: url.hostname,
@@ -139,34 +141,58 @@ pipeline {
                                   path: `${url.pathname}${url.search}`
                                 }, response => {
                                   response.resume();
-                                  response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 500 ? 0 : 1));
+                                  response.on("end", () => {
+                                    clearTimeout(timeout);
+                                    process.exit(response.statusCode >= 200 && response.statusCode < 500 ? 0 : 1);
+                                  });
                                 });
 
                                 request.setTimeout(2000, () => request.destroy(new Error("timeout")));
-                                request.on("error", () => process.exit(1));
+                                request.on("error", () => {
+                                  clearTimeout(timeout);
+                                  process.exit(1);
+                                });
                                 request.end();
                               '
                             }
 
-                            resolve_dashboard_base_url() {
+                            dashboard_candidates() {
                               primary="${DASHBOARD_BASE_URL%/}"
-                              fallback="http://host.docker.internal:3000"
+                              echo "$primary"
+                              echo "http://host.docker.internal:3000"
+                              echo "http://gateway.docker.internal:3000"
 
-                              if probe_dashboard_url "$primary"; then
-                                DASHBOARD_BASE_URL="$primary"
-                                export DASHBOARD_BASE_URL
-                                echo "[LIVE-PROGRESS] Dashboard reachable at ${DASHBOARD_BASE_URL}"
-                                return 0
+                              if command -v ip >/dev/null 2>&1; then
+                                gateway="$(ip route 2>/dev/null | awk '/default/ {print $3; exit}')"
+                                if [ -n "$gateway" ]; then
+                                  echo "http://${gateway}:3000"
+                                fi
                               fi
+                            }
 
-                              echo "[LIVE-PROGRESS] WARN dashboard not reachable at ${primary}"
+                            resolve_dashboard_base_url() {
+                              seen=""
 
-                              if [ "$primary" != "$fallback" ] && probe_dashboard_url "$fallback"; then
-                                DASHBOARD_BASE_URL="$fallback"
-                                export DASHBOARD_BASE_URL
-                                echo "[LIVE-PROGRESS] Dashboard reachable using fallback ${DASHBOARD_BASE_URL}"
-                                return 0
-                              fi
+                              for candidate in $(dashboard_candidates); do
+                                if [ -z "$candidate" ]; then
+                                  continue
+                                fi
+
+                                case " $seen " in
+                                  *" $candidate "*) continue ;;
+                                esac
+
+                                seen="$seen $candidate"
+
+                                if probe_dashboard_url "$candidate"; then
+                                  DASHBOARD_BASE_URL="$candidate"
+                                  export DASHBOARD_BASE_URL
+                                  echo "[LIVE-PROGRESS] Dashboard reachable at ${DASHBOARD_BASE_URL}"
+                                  return 0
+                                fi
+
+                                echo "[LIVE-PROGRESS] WARN dashboard not reachable at ${candidate}"
+                              done
 
                               echo "[LIVE-PROGRESS] WARN dashboard is not reachable from Jenkins; live updates will rely on artifact sync"
                               return 0
@@ -174,6 +200,11 @@ pipeline {
 
                             publish_live_progress() {
                               if [ -z "${DASHBOARD_BASE_URL:-}" ] || [ -z "${MODULE_ID:-}" ] || [ -z "${RUN_ID:-}" ] || [ ! -f reports/live-progress.json ]; then
+                                return 0
+                              fi
+
+                              if ! probe_dashboard_url "$DASHBOARD_BASE_URL"; then
+                                echo "[LIVE-PROGRESS] WARN skipping publish; dashboard not reachable at ${DASHBOARD_BASE_URL}"
                                 return 0
                               fi
 
@@ -318,7 +349,6 @@ pipeline {
                                 setTimeout(() => process.exit(0), timeoutMs);
                               ' || echo "[LIVE-PROGRESS] publish request failed"
                             }
-
                             resolve_dashboard_base_url
 
                             node runners/modular.js \
