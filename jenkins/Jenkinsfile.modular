@@ -122,42 +122,7 @@ pipeline {
                                 return 0
                               fi
 
-                              DASHBOARD_LIVE_PROGRESS_URL="${DASHBOARD_BASE_URL%/}/api/${MODULE_ID}/runs/${RUN_ID}/progress"
-                              echo "[LIVE-PROGRESS] Publishing to ${DASHBOARD_LIVE_PROGRESS_URL}"
-
-                              DASHBOARD_LIVE_PROGRESS_URL="$DASHBOARD_LIVE_PROGRESS_URL" \
-                              LIVE_PROGRESS_FILE="reports/live-progress.json" \
-                              node -e '
-                                const fs = require("fs");
-                                const http = require("http");
-                                const https = require("https");
-                                const target = process.env.DASHBOARD_LIVE_PROGRESS_URL;
-                                const file = process.env.LIVE_PROGRESS_FILE;
-
-                                if (!target || !fs.existsSync(file)) process.exit(0);
-
-                                const body = fs.readFileSync(file);
-                                const url = new URL(target);
-                                const client = url.protocol === "https:" ? https : http;
-                                const request = client.request(url, {
-                                  method: "POST",
-                                  hostname: url.hostname,
-                                  port: url.port,
-                                  path: `${url.pathname}${url.search}`,
-                                  headers: {
-                                    "Content-Type": "application/json",
-                                    "Content-Length": body.length
-                                  }
-                                }, response => {
-                                  response.resume();
-                                  response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 300 ? 0 : 1));
-                                });
-
-                                request.on("error", error => { console.error("[LIVE-PROGRESS] " + error.message); process.exit(0); });
-                                request.write(body);
-                                request.end();
-                                setTimeout(() => process.exit(0), 3000);
-                              ' || echo "[LIVE-PROGRESS] publish request failed"
+                              LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
                             }
 
                             node runners/modular.js \
@@ -199,83 +164,107 @@ pipeline {
     post {
         success {
             dir("${env.PROJECT_DIR}") {
-                sh '''
-                    if [ -f reports/live-progress.json ]; then
-                      node -e '
-                        const fs = require("fs");
-                        const path = "reports/live-progress.json";
-                        const data = JSON.parse(fs.readFileSync(path, "utf8"));
-                        data.execution.status = "SUCCESS";
-                        data.execution.buildNumber = process.env.BUILD_NUMBER;
-                        data.execution.finishedAt = new Date().toISOString();
-                        if (data.execution.startedAt) {
-                          data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
-                        }
-                        fs.writeFileSync(path, JSON.stringify(data, null, 2));
-                      '
-                    fi
-                '''
+                withEnv([
+                    "MODULE_ID=${params.module.trim().toLowerCase()}",
+                    "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
+                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                ]) {
+                    sh '''
+                        if [ -f reports/live-progress.json ]; then
+                          node -e '
+                            const fs = require("fs");
+                            const path = "reports/live-progress.json";
+                            const data = JSON.parse(fs.readFileSync(path, "utf8"));
+                            data.execution.status = "SUCCESS";
+                            data.execution.buildNumber = process.env.BUILD_NUMBER;
+                            data.execution.finishedAt = new Date().toISOString();
+                            if (data.execution.startedAt) {
+                              data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                            }
+                            fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                          '
+
+                          LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
+                        fi
+                    '''
+                }
             }
         }
 
         failure {
             dir("${env.PROJECT_DIR}") {
-                sh '''
-                    node -e '
-                      const fs = require("fs");
-                      const path = "reports/live-progress.json";
-                      let data = {
-                        execution: {
-                          status: "FAILURE",
-                          module: process.env.module || null,
-                          runId: process.env.runId || process.env.BUILD_TAG || null,
-                          collection: "REGRESIVOS",
-                          buildNumber: process.env.BUILD_NUMBER,
-                          startedAt: null,
-                          finishedAt: new Date().toISOString(),
-                          durationMs: null
-                        },
-                        parameters: {},
-                        summary: { total: 0, passed: 0, failed: 1, currentApi: null },
-                        apis: []
-                      };
+                withEnv([
+                    "MODULE_ID=${params.module.trim().toLowerCase()}",
+                    "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
+                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                ]) {
+                    sh '''
+                        node -e '
+                          const fs = require("fs");
+                          const path = "reports/live-progress.json";
+                          let data = {
+                            execution: {
+                              status: "FAILURE",
+                              module: process.env.MODULE_ID || null,
+                              runId: process.env.RUN_ID || process.env.BUILD_TAG || null,
+                              collection: "REGRESIVOS",
+                              buildNumber: process.env.BUILD_NUMBER,
+                              startedAt: null,
+                              finishedAt: new Date().toISOString(),
+                              durationMs: null
+                            },
+                            parameters: {},
+                            summary: { total: 0, passed: 0, failed: 1, currentApi: null },
+                            apis: []
+                          };
 
-                      if (fs.existsSync(path)) {
-                        data = JSON.parse(fs.readFileSync(path, "utf8"));
-                        data.execution.status = "FAILURE";
-                        data.execution.buildNumber = process.env.BUILD_NUMBER;
-                        data.execution.finishedAt = new Date().toISOString();
-                        if (data.execution.startedAt) {
-                          data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
-                        }
-                      }
+                          if (fs.existsSync(path)) {
+                            data = JSON.parse(fs.readFileSync(path, "utf8"));
+                            data.execution.status = "FAILURE";
+                            data.execution.buildNumber = process.env.BUILD_NUMBER;
+                            data.execution.finishedAt = new Date().toISOString();
+                            if (data.execution.startedAt) {
+                              data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                            }
+                          }
 
-                      fs.writeFileSync(path, JSON.stringify(data, null, 2));
-                    '
-                '''
+                          fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                        '
+
+                        LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
+                    '''
+                }
             }
         }
 
         aborted {
             dir("${env.PROJECT_DIR}") {
-                sh '''
-                    if [ -f reports/live-progress.json ]; then
-                      node -e '
-                        const fs = require("fs");
-                        const path = "reports/live-progress.json";
-                        const data = JSON.parse(fs.readFileSync(path, "utf8"));
-                        data.execution.status = "ABORTED";
-                        data.execution.buildNumber = process.env.BUILD_NUMBER;
-                        data.execution.finishedAt = new Date().toISOString();
-                        data.summary = data.summary || {};
-                        data.summary.currentApi = "Execution aborted in Jenkins";
-                        if (data.execution.startedAt) {
-                          data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
-                        }
-                        fs.writeFileSync(path, JSON.stringify(data, null, 2));
-                      '
-                    fi
-                '''
+                withEnv([
+                    "MODULE_ID=${params.module.trim().toLowerCase()}",
+                    "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
+                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                ]) {
+                    sh '''
+                        if [ -f reports/live-progress.json ]; then
+                          node -e '
+                            const fs = require("fs");
+                            const path = "reports/live-progress.json";
+                            const data = JSON.parse(fs.readFileSync(path, "utf8"));
+                            data.execution.status = "ABORTED";
+                            data.execution.buildNumber = process.env.BUILD_NUMBER;
+                            data.execution.finishedAt = new Date().toISOString();
+                            data.summary = data.summary || {};
+                            data.summary.currentApi = "Execution aborted in Jenkins";
+                            if (data.execution.startedAt) {
+                              data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                            }
+                            fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                          '
+
+                          LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
+                        fi
+                    '''
+                }
             }
         }
 

@@ -25,10 +25,25 @@ const JENKINS_USER = process.env.JENKINS_USER;
 const JENKINS_API_TOKEN = process.env.JENKINS_API_TOKEN;
 const JENKINS_POLL_INTERVAL_MS = Number(process.env.JENKINS_POLL_INTERVAL_MS || 1500);
 const JENKINS_DASHBOARD_BASE_URL = process.env.JENKINS_DASHBOARD_BASE_URL || getDashboardBaseUrlForJenkins(PORT);
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '75mb';
 
 app.use(cors());
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.use('/public', express.static(path.join(__dirname, 'public')));
+
+app.use((error, req, res, next) => {
+  if (!error) return next();
+
+  if (error.type === 'entity.too.large' || error instanceof SyntaxError) {
+    console.warn(`[LIVE-PROGRESS] Rejected payload ${req.method} ${req.originalUrl}: ${error.message}`);
+    return res.status(error.status || 400).json({
+      ok: false,
+      message: error.type === 'entity.too.large' ? 'Live progress payload is too large.' : 'Invalid JSON payload.'
+    });
+  }
+
+  return next(error);
+});
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'live-viewer.html'));
@@ -130,6 +145,7 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
   const progress = req.body;
 
   if (!progress || typeof progress !== 'object' || !progress.execution) {
+    console.warn(`[LIVE-PROGRESS] Invalid payload for ${req.params.module}/${req.params.runId}`);
     return res.status(400).json({
       ok: false,
       message: 'Invalid live progress payload.'
@@ -149,6 +165,10 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
       links: buildReportLinks({ ...run, ...patch, buildNumber })
     }
   });
+
+  console.log(
+    `[LIVE-PROGRESS] ${run.module}/${run.id} status=${updatedRun.status} build=${updatedRun.buildNumber || '--'} apis=${updatedRun.apiExecutions?.length || 0}`
+  );
 
   res.json({ ok: true, data: updatedRun });
 });

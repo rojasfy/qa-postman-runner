@@ -127,7 +127,7 @@ async function initDashboard() {
     await loadModules();
     await loadFlows(currentModule);
     await refreshLatestRun();
-    serverStatus.textContent = 'SERVER: OK / FASE 6';
+    serverStatus.textContent = 'SERVER: OK / FASE 7';
     serverStatus.className = 'pill pill-passed';
   } catch (error) {
     serverStatus.textContent = 'SERVER: ERROR';
