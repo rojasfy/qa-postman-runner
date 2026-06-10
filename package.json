@@ -6,6 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "player": "node runners/player.js",
+    "modular": "node runners/modular.js",
     "server": "node server.js"
   },
   "keywords": [],

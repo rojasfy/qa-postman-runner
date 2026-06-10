@@ -8,6 +8,8 @@ function env(name, fallback) {
   return value && String(value).trim() ? value : fallback;
 }
 
+const REGRESIVOS_JOB_NAME = env('REGRESIVOS_JOB_NAME', 'REGRESIVOS-MODULAR');
+
 function slug(value) {
   return String(value || '')
     .normalize('NFKD')
@@ -22,45 +24,29 @@ const moduleConfig = {
     id: 'ply',
     label: 'PLY',
     enabled: true,
-    jobName: env('PLY_JOB_NAME', 'PLY'),
+    jobName: REGRESIVOS_JOB_NAME,
     collectionFile: SHARED_COLLECTION_FILE,
     environmentFile: SHARED_ENVIRONMENT_FILE,
-    legacyCollectionParam: 'PLAYER',
     flows: [
       { id: 'getmedia', label: 'Getmedia', folderName: 'Getmedia' },
       { id: 'assets', label: 'Assets', folderName: 'Assets' },
-      { id: 'tracking-bookmark', label: 'Tracking - Bookmark', folderName: 'Tracking - Bookmark' }
+      { id: 'tracking-bookmark', label: 'Tracking - Bookmark', folderName: 'Tracking - Boolmark' }
     ]
   },
 
   usr: {
     id: 'usr',
     label: 'USR',
-    enabled: false,
-    jobName: env('USR_JOB_NAME', 'USR'),
+    enabled: true,
+    jobName: REGRESIVOS_JOB_NAME,
     collectionFile: SHARED_COLLECTION_FILE,
     environmentFile: SHARED_ENVIRONMENT_FILE,
-    flows: []
-  },
-
-  cms: {
-    id: 'cms',
-    label: 'CMS',
-    enabled: false,
-    jobName: env('CMS_JOB_NAME', 'CMS'),
-    collectionFile: SHARED_COLLECTION_FILE,
-    environmentFile: SHARED_ENVIRONMENT_FILE,
-    flows: []
-  },
-
-  gps: {
-    id: 'gps',
-    label: 'GPS',
-    enabled: false,
-    jobName: env('GPS_JOB_NAME', 'GPS'),
-    collectionFile: SHARED_COLLECTION_FILE,
-    environmentFile: SHARED_ENVIRONMENT_FILE,
-    flows: []
+    flows: [
+      { id: 'perfiles', label: 'Perfiles', folderName: 'Perfiles' },
+      { id: 'favorited', label: 'Favorited', folderName: 'Favorited' },
+      { id: 'controlpin', label: 'ControlPin', folderName: 'ControlPin' },
+      { id: 'reminder', label: 'Reminder', folderName: 'Reminder' }
+    ]
   }
 };
 

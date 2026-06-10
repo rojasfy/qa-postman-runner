@@ -1,0 +1,352 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        string(name: 'module', defaultValue: 'ply', description: 'Module id. Supported in this phase: ply, usr.')
+        string(name: 'runId', defaultValue: '', description: 'Backend run id used to correlate live progress.')
+        string(name: 'collectionFile', defaultValue: 'collections/REGRESIVOS.postman_collection.json', description: 'Shared Postman collection file.')
+        string(name: 'environmentFile', defaultValue: 'environments/PRE-UAT-PROD-CLAROVIDEO.postman_environment.json', description: 'Shared Postman environment file.')
+        string(name: 'flow', defaultValue: 'getmedia', description: 'Selected UI flow id.')
+        string(name: 'folderName', defaultValue: 'Getmedia', description: 'Postman folder resolved from the selected flow.')
+
+        choice(name: 'environment', choices: ['preuat', 'uat', 'uat-berc', 'uat-oper', 'prod', 'prod-behf', 'prod-fehf'], description: 'Target environment')
+        choice(name: 'platform', choices: ['aws', 'azr'], description: 'Target platform')
+        choice(name: 'serviceType', choices: ['ott', 'iptv'], description: 'Service type')
+        choice(name: 'device', choices: ['web', 'roku', 'kaon', 'zte', 'mobileandroid', 'mobileios'], description: 'Device')
+        choice(name: 'region', choices: ['guatemala', 'nicaragua', 'elsalvador', 'costarica', 'honduras', 'mexico', 'colombia', 'panama', 'peru', 'chile', 'ecuador', 'dominicana', 'brasil', 'argentina', 'uruguay', 'paraguay'], description: 'Region')
+        choice(name: 'endpointType', choices: ['origin', 'akamai'], description: 'Endpoint type')
+
+        string(name: 'userFlow', defaultValue: '', description: 'Optional user flow metadata.')
+        string(name: 'dashboardBaseUrl', defaultValue: 'http://host.docker.internal:3000', description: 'Backend API URL used by Jenkins to publish live progress.')
+    }
+
+    environment {
+        PROJECT_DIR = "${WORKSPACE}"
+        REPORTS_DIR = "${WORKSPACE}/reports"
+        NPM_CACHE_DIR = '/var/jenkins_home/npm-cache/regresivos-modular'
+    }
+
+    stages {
+        stage('Validate parameters') {
+            steps {
+                script {
+                    def supportedModules = ['ply', 'usr']
+                    def moduleId = params.module?.trim()?.toLowerCase()
+
+                    if (!supportedModules.contains(moduleId)) {
+                        error("Unsupported module for Jenkinsfile.modular: ${params.module}")
+                    }
+
+                    if (!params.runId?.trim()) {
+                        echo("Parameter runId is empty. Jenkins will use a manual run id; backend live progress correlation only works when /api/${moduleId}/runs triggers the job.")
+                    }
+
+                    if (!params.collectionFile?.trim()) {
+                        error('Parameter collectionFile is required.')
+                    }
+
+                    if (!params.environmentFile?.trim()) {
+                        error('Parameter environmentFile is required.')
+                    }
+
+                    if (!params.flow?.trim()) {
+                        error('Parameter flow is required.')
+                    }
+
+                    if (!params.folderName?.trim()) {
+                        error('Parameter folderName is required. The runner must not execute the whole collection.')
+                    }
+                }
+            }
+        }
+
+        stage('Prepare reports directory') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    withEnv([
+                        "MODULE_ID=${params.module.trim().toLowerCase()}",
+                        "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
+                        "RUN_FLOW=${params.flow}",
+                        "RUN_FOLDER_NAME=${params.folderName}",
+                        "RUN_COLLECTION_FILE=${params.collectionFile}",
+                        "RUN_ENVIRONMENT_FILE=${params.environmentFile}",
+                        "RUN_ENVIRONMENT=${params.environment}",
+                        "RUN_PLATFORM=${params.platform}",
+                        "RUN_SERVICE_TYPE=${params.serviceType}",
+                        "RUN_DEVICE=${params.device}",
+                        "RUN_REGION=${params.region}",
+                        "RUN_ENDPOINT_TYPE=${params.endpointType}",
+                        "RUN_USER_FLOW=${params.userFlow ?: ''}"
+                    ]) {
+                        sh '''
+                            set -eu
+                            mkdir -p "$REPORTS_DIR"
+
+                            node -e '
+                              const fs = require("fs");
+                              const path = require("path");
+
+                              const collection = path.basename(process.env.RUN_COLLECTION_FILE || "REGRESIVOS.postman_collection.json")
+                                .replace(/\.postman_collection\.json$/i, "")
+                                .replace(/\.json$/i, "");
+
+                              const data = {
+                                execution: {
+                                  status: "RUNNING",
+                                  module: process.env.MODULE_ID,
+                                  runId: process.env.RUN_ID,
+                                  collection,
+                                  buildNumber: process.env.BUILD_NUMBER,
+                                  startedAt: new Date().toISOString(),
+                                  finishedAt: null,
+                                  durationMs: null
+                                },
+                                parameters: {
+                                  module: process.env.MODULE_ID,
+                                  flow: process.env.RUN_FLOW,
+                                  folderName: process.env.RUN_FOLDER_NAME,
+                                  collectionFile: process.env.RUN_COLLECTION_FILE,
+                                  environmentFile: process.env.RUN_ENVIRONMENT_FILE,
+                                  environment: process.env.RUN_ENVIRONMENT,
+                                  platform: process.env.RUN_PLATFORM,
+                                  serviceType: process.env.RUN_SERVICE_TYPE,
+                                  device: process.env.RUN_DEVICE,
+                                  region: process.env.RUN_REGION,
+                                  endpointType: process.env.RUN_ENDPOINT_TYPE,
+                                  userFlow: process.env.RUN_USER_FLOW || null
+                                },
+                                summary: {
+                                  total: 0,
+                                  passed: 0,
+                                  failed: 0,
+                                  currentApi: null
+                                },
+                                apis: []
+                              };
+
+                              fs.writeFileSync("reports/live-progress.json", JSON.stringify(data, null, 2));
+                            '
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Install dependencies') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    sh '''
+                        set -eu
+                        mkdir -p "$NPM_CACHE_DIR"
+
+                        if [ -d node_modules/newman ] && node -e "require('newman')" >/dev/null 2>&1; then
+                          echo "Newman already available. Skipping npm install."
+                        elif [ -f package-lock.json ]; then
+                          npm ci --cache "$NPM_CACHE_DIR" --prefer-offline
+                        else
+                          npm install --cache "$NPM_CACHE_DIR" --prefer-offline
+                        fi
+                    '''
+                }
+            }
+        }
+
+        stage('Run modular regression') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    withEnv([
+                        "MODULE_ID=${params.module.trim().toLowerCase()}",
+                        "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
+                        "RUN_COLLECTION_FILE=${params.collectionFile}",
+                        "RUN_ENVIRONMENT_FILE=${params.environmentFile}",
+                        "RUN_FLOW=${params.flow}",
+                        "RUN_FOLDER_NAME=${params.folderName}",
+                        "RUN_ENVIRONMENT=${params.environment}",
+                        "RUN_PLATFORM=${params.platform}",
+                        "RUN_SERVICE_TYPE=${params.serviceType}",
+                        "RUN_DEVICE=${params.device}",
+                        "RUN_REGION=${params.region}",
+                        "RUN_ENDPOINT_TYPE=${params.endpointType}",
+                        "RUN_USER_FLOW=${params.userFlow ?: ''}",
+                        "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                    ]) {
+                        sh '''
+                            set -eu
+
+                            publish_live_progress() {
+                              if [ -z "${DASHBOARD_BASE_URL:-}" ] || [ -z "${MODULE_ID:-}" ] || [ -z "${RUN_ID:-}" ] || [ ! -f reports/live-progress.json ]; then
+                                return 0
+                              fi
+
+                              DASHBOARD_LIVE_PROGRESS_URL="${DASHBOARD_BASE_URL%/}/api/${MODULE_ID}/runs/${RUN_ID}/progress"
+                              echo "[LIVE-PROGRESS] Publishing to ${DASHBOARD_LIVE_PROGRESS_URL}"
+
+                              DASHBOARD_LIVE_PROGRESS_URL="$DASHBOARD_LIVE_PROGRESS_URL" \
+                              LIVE_PROGRESS_FILE="reports/live-progress.json" \
+                              node -e '
+                                const fs = require("fs");
+                                const http = require("http");
+                                const https = require("https");
+                                const target = process.env.DASHBOARD_LIVE_PROGRESS_URL;
+                                const file = process.env.LIVE_PROGRESS_FILE;
+
+                                if (!target || !fs.existsSync(file)) process.exit(0);
+
+                                const body = fs.readFileSync(file);
+                                const url = new URL(target);
+                                const client = url.protocol === "https:" ? https : http;
+                                const request = client.request(url, {
+                                  method: "POST",
+                                  hostname: url.hostname,
+                                  port: url.port,
+                                  path: `${url.pathname}${url.search}`,
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                    "Content-Length": body.length
+                                  }
+                                }, response => {
+                                  response.resume();
+                                  response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 300 ? 0 : 1));
+                                });
+
+                                request.on("error", error => { console.error("[LIVE-PROGRESS] " + error.message); process.exit(0); });
+                                request.write(body);
+                                request.end();
+                                setTimeout(() => process.exit(0), 3000);
+                              ' || echo "[LIVE-PROGRESS] publish request failed"
+                            }
+
+                            node runners/modular.js \
+                              --module "$MODULE_ID" \
+                              --runId "$RUN_ID" \
+                              --collectionFile "$RUN_COLLECTION_FILE" \
+                              --environmentFile "$RUN_ENVIRONMENT_FILE" \
+                              --flow "$RUN_FLOW" \
+                              --folderName "$RUN_FOLDER_NAME" \
+                              --environment "$RUN_ENVIRONMENT" \
+                              --platform "$RUN_PLATFORM" \
+                              --serviceType "$RUN_SERVICE_TYPE" \
+                              --device "$RUN_DEVICE" \
+                              --region "$RUN_REGION" \
+                              --endpointType "$RUN_ENDPOINT_TYPE" \
+                              --userFlow "${RUN_USER_FLOW:-}" &
+
+                            runner_pid=$!
+
+                            while kill -0 "$runner_pid" 2>/dev/null; do
+                              publish_live_progress
+                              sleep 2
+                            done
+
+                            set +e
+                            wait "$runner_pid"
+                            runner_status=$?
+                            set -e
+
+                            publish_live_progress
+                            exit "$runner_status"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            dir("${env.PROJECT_DIR}") {
+                sh '''
+                    if [ -f reports/live-progress.json ]; then
+                      node -e '
+                        const fs = require("fs");
+                        const path = "reports/live-progress.json";
+                        const data = JSON.parse(fs.readFileSync(path, "utf8"));
+                        data.execution.status = "SUCCESS";
+                        data.execution.buildNumber = process.env.BUILD_NUMBER;
+                        data.execution.finishedAt = new Date().toISOString();
+                        if (data.execution.startedAt) {
+                          data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                        }
+                        fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                      '
+                    fi
+                '''
+            }
+        }
+
+        failure {
+            dir("${env.PROJECT_DIR}") {
+                sh '''
+                    node -e '
+                      const fs = require("fs");
+                      const path = "reports/live-progress.json";
+                      let data = {
+                        execution: {
+                          status: "FAILURE",
+                          module: process.env.module || null,
+                          runId: process.env.runId || process.env.BUILD_TAG || null,
+                          collection: "REGRESIVOS",
+                          buildNumber: process.env.BUILD_NUMBER,
+                          startedAt: null,
+                          finishedAt: new Date().toISOString(),
+                          durationMs: null
+                        },
+                        parameters: {},
+                        summary: { total: 0, passed: 0, failed: 1, currentApi: null },
+                        apis: []
+                      };
+
+                      if (fs.existsSync(path)) {
+                        data = JSON.parse(fs.readFileSync(path, "utf8"));
+                        data.execution.status = "FAILURE";
+                        data.execution.buildNumber = process.env.BUILD_NUMBER;
+                        data.execution.finishedAt = new Date().toISOString();
+                        if (data.execution.startedAt) {
+                          data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                        }
+                      }
+
+                      fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                    '
+                '''
+            }
+        }
+
+        aborted {
+            dir("${env.PROJECT_DIR}") {
+                sh '''
+                    if [ -f reports/live-progress.json ]; then
+                      node -e '
+                        const fs = require("fs");
+                        const path = "reports/live-progress.json";
+                        const data = JSON.parse(fs.readFileSync(path, "utf8"));
+                        data.execution.status = "ABORTED";
+                        data.execution.buildNumber = process.env.BUILD_NUMBER;
+                        data.execution.finishedAt = new Date().toISOString();
+                        data.summary = data.summary || {};
+                        data.summary.currentApi = "Execution aborted in Jenkins";
+                        if (data.execution.startedAt) {
+                          data.execution.durationMs = new Date(data.execution.finishedAt) - new Date(data.execution.startedAt);
+                        }
+                        fs.writeFileSync(path, JSON.stringify(data, null, 2));
+                      '
+                    fi
+                '''
+            }
+        }
+
+        always {
+            dir("${env.PROJECT_DIR}") {
+                archiveArtifacts(
+                    artifacts: 'reports/live-progress.json,reports/newman-result.json,reports/newman-report.html',
+                    allowEmptyArchive: true
+                )
+            }
+        }
+    }
+}

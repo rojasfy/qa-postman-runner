@@ -653,5 +653,5 @@ function sleep(ms) {
 
 app.listen(PORT, () => {
   console.log(`QA Dashboard running on http://localhost:${PORT}`);
-  console.log('Execution mode: JENKINS / FASE 6');
+  console.log('Execution mode: JENKINS / FASE 7 MODULAR');
 });
