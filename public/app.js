@@ -286,13 +286,24 @@ function hasRenderableProgress(run = {}) {
 function mergeRunProgress(run, progress) {
   if (!progress) return run;
 
+  const runApiCount = (run.apiExecutions || []).length;
+  const progressApiCount = (progress.apiExecutions || []).length;
+  const runSummaryTotal = Number(run.summary?.total || 0);
+  const progressSummaryTotal = Number(progress.summary?.total || 0);
+  const useProgressApis = progressApiCount >= runApiCount;
+  const useProgressSummary = progressSummaryTotal >= runSummaryTotal;
+
   return {
     ...run,
     status: progress.status || run.status,
-    summary: progress.summary || run.summary,
-    apiExecutions: progress.apiExecutions || run.apiExecutions,
-    executionSteps: progress.executionSteps || run.executionSteps,
-    qaConsole: progress.qaConsole || run.qaConsole,
+    summary: useProgressSummary ? (progress.summary || run.summary) : run.summary,
+    apiExecutions: useProgressApis ? (progress.apiExecutions || run.apiExecutions) : run.apiExecutions,
+    executionSteps: (progress.executionSteps || []).length >= (run.executionSteps || []).length
+      ? (progress.executionSteps || run.executionSteps)
+      : run.executionSteps,
+    qaConsole: (progress.qaConsole || []).length >= (run.qaConsole || []).length
+      ? (progress.qaConsole || run.qaConsole)
+      : run.qaConsole,
     startedAt: progress.startedAt || run.startedAt,
     finishedAt: progress.finishedAt || run.finishedAt
   };

@@ -116,9 +116,24 @@ app.get('/api/:module/runs/:runId/status', async (req, res) => {
   res.json({ ok: true, data: runStore.get(run.module, run.id) });
 });
 
-app.get('/api/:module/runs/:runId/progress', (req, res) => {
-  const run = getRunOr404(req.params.module, req.params.runId, res);
+app.get('/api/:module/runs/:runId/progress', async (req, res) => {
+  let run = getRunOr404(req.params.module, req.params.runId, res);
   if (!run) return;
+
+  if (run.buildNumber && FINAL_STATUSES.has(String(run.status || '').toUpperCase()) && !run.apiExecutions?.length) {
+    const artifactPatch = await getLiveProgressPatchFromJenkinsArtifact(run);
+
+    if (artifactPatch) {
+      run = runStore.update(run.module, run.id, {
+        ...artifactPatch,
+        reports: {
+          ...run.reports,
+          ...artifactPatch.reports,
+          links: buildReportLinks({ ...run, ...artifactPatch })
+        }
+      }) || run;
+    }
+  }
 
   res.json({
     ok: true,
@@ -170,7 +185,18 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
     `[LIVE-PROGRESS] ${run.module}/${run.id} status=${updatedRun.status} build=${updatedRun.buildNumber || '--'} apis=${updatedRun.apiExecutions?.length || 0}`
   );
 
-  res.json({ ok: true, data: updatedRun });
+  res.json({
+    ok: true,
+    data: {
+      id: updatedRun.id,
+      module: updatedRun.module,
+      status: updatedRun.status,
+      buildNumber: updatedRun.buildNumber || null,
+      summary: updatedRun.summary,
+      apiExecutionsCount: updatedRun.apiExecutions?.length || 0,
+      syncedAt: updatedRun.reports?.syncedAt || updatedRun.updatedAt || new Date().toISOString()
+    }
+  });
 });
 
 app.get('/api/:module/runs/:runId/reports', async (req, res) => {

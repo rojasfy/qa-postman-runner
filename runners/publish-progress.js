@@ -6,6 +6,7 @@ const dashboardBaseUrl = process.env.DASHBOARD_BASE_URL || process.env.dashboard
 const moduleId = process.env.MODULE_ID || process.env.module;
 const runId = process.env.RUN_ID || process.env.runId;
 const progressFile = process.env.LIVE_PROGRESS_FILE || 'reports/live-progress.json';
+const timeoutMs = Number(process.env.LIVE_PROGRESS_TIMEOUT_MS || 15000);
 
 function exitOk(message) {
   if (message) console.log(`[LIVE-PROGRESS] ${message}`);
@@ -27,6 +28,8 @@ const client = url.protocol === 'https:' ? https : http;
 
 console.log(`[LIVE-PROGRESS] Publishing ${body.length} bytes to ${target}`);
 
+let timeout;
+
 const request = client.request(url, {
   method: 'POST',
   hostname: url.hostname,
@@ -41,6 +44,7 @@ const request = client.request(url, {
 
   response.on('data', chunk => chunks.push(chunk));
   response.on('end', () => {
+    clearTimeout(timeout);
     const responseBody = Buffer.concat(chunks).toString('utf8').slice(0, 500);
     const status = response.statusCode || 0;
     const level = status >= 200 && status < 300 ? 'OK' : 'WARN';
@@ -51,6 +55,7 @@ const request = client.request(url, {
 });
 
 request.on('error', error => {
+  clearTimeout(timeout);
   console.error(`[LIVE-PROGRESS] ERROR ${error.message}`);
   process.exit(0);
 });
@@ -58,7 +63,7 @@ request.on('error', error => {
 request.write(body);
 request.end();
 
-setTimeout(() => {
-  console.error('[LIVE-PROGRESS] ERROR publish timeout after 5000ms');
-  process.exit(0);
-}, 5000);
+timeout = setTimeout(() => {
+  console.error(`[LIVE-PROGRESS] ERROR publish timeout after ${timeoutMs}ms`);
+  request.destroy(new Error(`publish timeout after ${timeoutMs}ms`));
+}, timeoutMs);
