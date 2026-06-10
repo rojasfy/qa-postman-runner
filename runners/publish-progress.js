@@ -241,6 +241,15 @@ function logPayloadMetrics(raw, payload, payloadBytes) {
 }
 
 let timeout;
+let finished = false;
+
+function finishOk(message) {
+  if (finished) return;
+  finished = true;
+  clearTimeout(timeout);
+  if (message) console.log(message);
+  process.exit(0);
+}
 
 const request = client.request(url, {
   method: 'POST',
@@ -252,30 +261,22 @@ const request = client.request(url, {
     'Content-Length': body.length
   }
 }, response => {
-  const chunks = [];
+  const status = response.statusCode || 0;
+  const level = status >= 200 && status < 300 ? 'OK' : 'WARN';
 
-  response.on('data', chunk => chunks.push(chunk));
+  response.resume();
   response.on('end', () => {
-    clearTimeout(timeout);
-    const responseBody = Buffer.concat(chunks).toString('utf8').slice(0, 500);
-    const status = response.statusCode || 0;
-    const level = status >= 200 && status < 300 ? 'OK' : 'WARN';
-
-    console.log(`[LIVE-PROGRESS] ${level} HTTP ${status}${responseBody ? ` ${responseBody}` : ''}`);
-    process.exit(0);
+    finishOk(`[LIVE-PROGRESS] ${level} HTTP ${status}`);
   });
 });
 
 request.on('error', error => {
-  clearTimeout(timeout);
-  console.error(`[LIVE-PROGRESS] ERROR ${error.message}`);
-  process.exit(0);
+  finishOk(`[LIVE-PROGRESS] WARN ${error.message}`);
 });
 
 request.write(body);
 request.end();
 
 timeout = setTimeout(() => {
-  console.error(`[LIVE-PROGRESS] ERROR publish timeout after ${timeoutMs}ms`);
-  request.destroy(new Error(`publish timeout after ${timeoutMs}ms`));
+  finishOk(`[LIVE-PROGRESS] WARN publish timeout after ${timeoutMs}ms; continuing`);
 }, timeoutMs);

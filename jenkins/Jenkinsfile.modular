@@ -177,7 +177,9 @@ pipeline {
                 withEnv([
                     "MODULE_ID=${params.module.trim().toLowerCase()}",
                     "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
-                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
+                    "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
+                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '10000'}"
                 ]) {
                     sh '''
                         if [ -f reports/live-progress.json ]; then
@@ -194,8 +196,8 @@ pipeline {
                             fs.writeFileSync(path, JSON.stringify(data, null, 2));
                           '
 
-                          LIVE_PROGRESS_MODE="full" \
-                          LIVE_PROGRESS_TIMEOUT_MS="10000" \
+                          LIVE_PROGRESS_MODE="${LIVE_PROGRESS_MODE:-filtered}" \
+                          LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
                           LIVE_PROGRESS_FILE="reports/live-progress.json" \
                           node runners/publish-progress.js || true
                         fi
@@ -209,7 +211,9 @@ pipeline {
                 withEnv([
                     "MODULE_ID=${params.module.trim().toLowerCase()}",
                     "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
-                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
+                    "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
+                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '10000'}"
                 ]) {
                     sh '''
                         node -e '
@@ -244,8 +248,8 @@ pipeline {
                           fs.writeFileSync(path, JSON.stringify(data, null, 2));
                         '
 
-                        LIVE_PROGRESS_MODE="full" \
-                        LIVE_PROGRESS_TIMEOUT_MS="10000" \
+                        LIVE_PROGRESS_MODE="${LIVE_PROGRESS_MODE:-filtered}" \
+                        LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
                         LIVE_PROGRESS_FILE="reports/live-progress.json" \
                         node runners/publish-progress.js || true
                     '''
@@ -258,7 +262,9 @@ pipeline {
                 withEnv([
                     "MODULE_ID=${params.module.trim().toLowerCase()}",
                     "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
-                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                    "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
+                    "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
+                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '10000'}"
                 ]) {
                     sh '''
                         if [ -f reports/live-progress.json ]; then
@@ -277,8 +283,8 @@ pipeline {
                             fs.writeFileSync(path, JSON.stringify(data, null, 2));
                           '
 
-                          LIVE_PROGRESS_MODE="full" \
-                          LIVE_PROGRESS_TIMEOUT_MS="10000" \
+                          LIVE_PROGRESS_MODE="${LIVE_PROGRESS_MODE:-filtered}" \
+                          LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
                           LIVE_PROGRESS_FILE="reports/live-progress.json" \
                           node runners/publish-progress.js || true
                         fi
