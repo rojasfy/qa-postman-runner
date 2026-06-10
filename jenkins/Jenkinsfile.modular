@@ -142,7 +142,109 @@ pipeline {
 
                                 if (!target || !fs.existsSync(file)) process.exit(0);
 
-                                const body = fs.readFileSync(file);
+                                const raw = fs.readFileSync(file, "utf8");
+                                const progress = JSON.parse(raw);
+                                const mode = String(process.env.LIVE_PROGRESS_MODE || "filtered").toLowerCase();
+                                const bodyLimit = Number(process.env.LIVE_PROGRESS_BODY_LIMIT_BYTES || 5120);
+                                const headerWhitelist = new Set(["partition", "true-client-ip", "authorization", "token", "user-token"]);
+                                const methodsWithBody = new Set(["POST", "PUT", "PATCH"]);
+                                const normalizeStatus = value => {
+                                  const status = String(value || "UNKNOWN").toUpperCase();
+                                  if (status === "PASSED") return "SUCCESS";
+                                  if (status === "FAILED") return "FAILURE";
+                                  return status;
+                                };
+                                const bytesOf = value => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value ?? null), "utf8");
+                                const pathOf = value => {
+                                  const rawUrl = String(value || "");
+                                  if (!rawUrl) return null;
+                                  try { return new URL(rawUrl).pathname.slice(0, 220); } catch (_) { return rawUrl.split("?")[0].slice(0, 220); }
+                                };
+                                const mask = value => {
+                                  const text = String(value || "");
+                                  const bearer = text.match(/^(Bearer\\s+)(.+)$/i);
+                                  if (bearer) return `${bearer[1]}${bearer[2].slice(0, 10)}...<masked>`;
+                                  return text.length <= 10 ? "<masked>" : `${text.slice(0, 10)}...<masked>`;
+                                };
+                                const shouldMask = (key, value) => {
+                                  const normalizedKey = String(key || "").toLowerCase();
+                                  const text = String(value || "");
+                                  return normalizedKey.includes("authorization")
+                                    || normalizedKey.includes("token")
+                                    || /^Bearer\\s+\\S+/i.test(text)
+                                    || /^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$/.test(text);
+                                };
+                                const headersOf = headers => Object.entries(headers || {}).reduce((result, entry) => {
+                                  const key = String(entry[0] || "").toLowerCase();
+                                  const value = entry[1];
+                                  if (headerWhitelist.has(key)) result[key] = shouldMask(key, value) ? mask(value) : value;
+                                  return result;
+                                }, {});
+                                const requestOf = api => {
+                                  const method = String(api.method || "").toUpperCase();
+                                  const request = { headers: headersOf(api.request && api.request.headers) };
+                                  if (!methodsWithBody.has(method) || !api.request || api.request.body === undefined || api.request.body === null) return request;
+                                  const originalBodySize = bytesOf(api.request.body);
+                                  if (mode === "truncated" && originalBodySize > bodyLimit) {
+                                    return {
+                                      ...request,
+                                      body: Buffer.from(typeof api.request.body === "string" ? api.request.body : JSON.stringify(api.request.body), "utf8").subarray(0, bodyLimit).toString("utf8"),
+                                      bodyTruncated: true,
+                                      originalBodySize
+                                    };
+                                  }
+                                  return { ...request, body: api.request.body, bodyTruncated: false, originalBodySize };
+                                };
+                                const rawApis = Array.isArray(progress.apis) ? progress.apis : (Array.isArray(progress.apiExecutions) ? progress.apiExecutions : []);
+                                const apis = rawApis.map(api => {
+                                  const status = normalizeStatus(api.status);
+                                  const assertions = Array.isArray(api.assertions) ? api.assertions : [];
+                                  return {
+                                    id: String(api.id || api.itemId || `${api.name || "api"}-${api.executedAt || ""}`),
+                                    itemId: api.itemId || null,
+                                    name: api.name || pathOf(api.url || api.path) || "Unnamed API",
+                                    method: api.method || null,
+                                    path: pathOf(api.url || api.path),
+                                    status,
+                                    statusCode: api.statusCode || (api.response && api.response.statusCode) || null,
+                                    statusText: api.statusText || (api.response && api.response.statusText) || null,
+                                    responseTime: api.responseTime || (api.response && api.response.timeMs) || null,
+                                    executedAt: api.executedAt || null,
+                                    request: requestOf(api),
+                                    response: {
+                                      statusCode: api.statusCode || (api.response && api.response.statusCode) || null,
+                                      statusText: api.statusText || (api.response && api.response.statusText) || null,
+                                      timeMs: api.responseTime || (api.response && api.response.timeMs) || null,
+                                      headers: headersOf(api.response && api.response.headers)
+                                    },
+                                    assertions: [{
+                                      total: assertions.length,
+                                      passed: assertions.filter(assertion => normalizeStatus(assertion.status) === "SUCCESS").length,
+                                      failed: assertions.filter(assertion => normalizeStatus(assertion.status) === "FAILURE").length,
+                                      status
+                                    }]
+                                  };
+                                });
+                                const passed = apis.filter(api => api.status === "SUCCESS").length;
+                                const failed = apis.filter(api => api.status === "FAILURE").length;
+                                const lastExecution = apis.length ? apis[apis.length - 1] : null;
+                                const payload = {
+                                  execution: progress.execution || {},
+                                  parameters: progress.parameters || {},
+                                  summary: {
+                                    total: apis.length,
+                                    passed,
+                                    failed,
+                                    currentApi: (lastExecution && lastExecution.name) || (progress.summary && progress.summary.currentApi) || null
+                                  },
+                                  counters: { total: apis.length, passed, failed },
+                                  currentApi: (lastExecution && lastExecution.name) || (progress.summary && progress.summary.currentApi) || null,
+                                  lastExecution,
+                                  apis
+                                };
+                                const body = mode === "full" ? Buffer.from(raw, "utf8") : Buffer.from(JSON.stringify(payload), "utf8");
+                                const avgApiBytes = rawApis.length ? Math.round(rawApis.reduce((sum, api) => sum + bytesOf(api), 0) / rawApis.length) : 0;
+                                console.log(`[LIVE-PROGRESS] Metrics scenario=${mode} fileBytes=${Buffer.byteLength(raw, "utf8")} apiExecutions=${rawApis.length} avgApiExecutionBytes=${avgApiBytes} payloadBytes=${body.length}`);
                                 const url = new URL(target);
                                 const client = url.protocol === "https:" ? https : http;
                                 const request = client.request(url, {
