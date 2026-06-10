@@ -28,7 +28,14 @@ const JENKINS_DASHBOARD_BASE_URL = process.env.JENKINS_DASHBOARD_BASE_URL || get
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '75mb';
 
 app.use(cors());
-app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.json({
+  limit: JSON_BODY_LIMIT,
+  verify: (req, res, buffer) => {
+    if (req.originalUrl?.includes('/progress')) {
+      req.rawBodySize = buffer.length;
+    }
+  }
+}));
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
 app.use((error, req, res, next) => {
@@ -154,6 +161,10 @@ app.get('/api/:module/runs/:runId/progress', async (req, res) => {
 });
 
 app.post('/api/:module/runs/:runId/progress', (req, res) => {
+  const startedAtMs = Date.now();
+  const bodySize = req.rawBodySize || Number(req.get('content-length') || 0);
+  console.log(`[LIVE-PROGRESS] receive ${req.params.module}/${req.params.runId} bytes=${bodySize}`);
+
   const run = getRunOr404(req.params.module, req.params.runId, res);
   if (!run) return;
 
@@ -182,7 +193,7 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
   });
 
   console.log(
-    `[LIVE-PROGRESS] ${run.module}/${run.id} status=${updatedRun.status} build=${updatedRun.buildNumber || '--'} apis=${updatedRun.apiExecutions?.length || 0}`
+    `[LIVE-PROGRESS] processed ${run.module}/${run.id} status=${updatedRun.status} build=${updatedRun.buildNumber || '--'} apis=${updatedRun.apiExecutions?.length || 0} durationMs=${Date.now() - startedAtMs}`
   );
 
   res.json({

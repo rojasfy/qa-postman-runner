@@ -21,13 +21,14 @@ function isVisibleServiceRequest(api) {
 
 function mapApi(api) {
   const status = normalizeStatus(api.status);
+  const url = api.url || api.path || null;
 
   return {
     id: String(api.id || api.itemId || `${api.name || 'api'}-${api.executedAt || Date.now()}`),
     itemId: api.itemId || null,
     name: api.name || 'Unnamed API',
     method: api.method || null,
-    url: api.url || null,
+    url,
     status,
     statusCode: api.statusCode || null,
     statusText: api.statusText || null,
@@ -35,7 +36,9 @@ function mapApi(api) {
     executedAt: api.executedAt || null,
     request: {
       headers: api.request?.headers || {},
-      body: api.request?.body ?? null
+      body: api.request?.body ?? null,
+      bodyTruncated: Boolean(api.request?.bodyTruncated),
+      originalBodySize: api.request?.originalBodySize || null
     },
     response: {
       statusCode: api.statusCode || api.response?.statusCode || null,

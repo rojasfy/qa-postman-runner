@@ -23,6 +23,8 @@ pipeline {
 
         string(name: 'userFlow', defaultValue: '', description: 'Optional user flow metadata.')
         string(name: 'dashboardBaseUrl', defaultValue: 'http://host.docker.internal:3000', description: 'Backend API URL used by Jenkins to publish live progress.')
+        choice(name: 'liveProgressMode', choices: ['filtered', 'truncated', 'full'], description: 'Payload published during the live loop: full=A, filtered=B, truncated=C.')
+        string(name: 'liveProgressTimeoutMs', defaultValue: '3000', description: 'Timeout for each live progress publish attempt.')
     }
 
     environment {
@@ -112,17 +114,25 @@ pipeline {
                         "RUN_REGION=${params.region}",
                         "RUN_ENDPOINT_TYPE=${params.endpointType}",
                         "RUN_USER_FLOW=${params.userFlow ?: ''}",
-                        "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}"
+                        "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
+                        "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
+                        "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '3000'}"
                     ]) {
                         sh '''
                             set -eu
 
                             publish_live_progress() {
+                              progress_mode="${1:-filtered}"
+                              progress_timeout_ms="${2:-3000}"
+
                               if [ -z "${DASHBOARD_BASE_URL:-}" ] || [ -z "${MODULE_ID:-}" ] || [ -z "${RUN_ID:-}" ] || [ ! -f reports/live-progress.json ]; then
                                 return 0
                               fi
 
-                              LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
+                              LIVE_PROGRESS_MODE="$progress_mode" \
+                              LIVE_PROGRESS_TIMEOUT_MS="$progress_timeout_ms" \
+                              LIVE_PROGRESS_FILE="reports/live-progress.json" \
+                              node runners/publish-progress.js || true
                             }
 
                             node runners/modular.js \
@@ -143,7 +153,7 @@ pipeline {
                             runner_pid=$!
 
                             while kill -0 "$runner_pid" 2>/dev/null; do
-                              publish_live_progress
+                              publish_live_progress "${LIVE_PROGRESS_MODE:-filtered}" "${LIVE_PROGRESS_TIMEOUT_MS:-3000}"
                               sleep 2
                             done
 
@@ -152,7 +162,7 @@ pipeline {
                             runner_status=$?
                             set -e
 
-                            publish_live_progress
+                            publish_live_progress "${LIVE_PROGRESS_MODE:-filtered}" "${LIVE_PROGRESS_TIMEOUT_MS:-3000}"
                             exit "$runner_status"
                         '''
                     }
@@ -184,7 +194,10 @@ pipeline {
                             fs.writeFileSync(path, JSON.stringify(data, null, 2));
                           '
 
-                          LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
+                          LIVE_PROGRESS_MODE="full" \
+                          LIVE_PROGRESS_TIMEOUT_MS="10000" \
+                          LIVE_PROGRESS_FILE="reports/live-progress.json" \
+                          node runners/publish-progress.js || true
                         fi
                     '''
                 }
@@ -231,7 +244,10 @@ pipeline {
                           fs.writeFileSync(path, JSON.stringify(data, null, 2));
                         '
 
-                        LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
+                        LIVE_PROGRESS_MODE="full" \
+                        LIVE_PROGRESS_TIMEOUT_MS="10000" \
+                        LIVE_PROGRESS_FILE="reports/live-progress.json" \
+                        node runners/publish-progress.js || true
                     '''
                 }
             }
@@ -261,7 +277,10 @@ pipeline {
                             fs.writeFileSync(path, JSON.stringify(data, null, 2));
                           '
 
-                          LIVE_PROGRESS_FILE="reports/live-progress.json" node runners/publish-progress.js
+                          LIVE_PROGRESS_MODE="full" \
+                          LIVE_PROGRESS_TIMEOUT_MS="10000" \
+                          LIVE_PROGRESS_FILE="reports/live-progress.json" \
+                          node runners/publish-progress.js || true
                         fi
                     '''
                 }
