@@ -68,71 +68,10 @@ pipeline {
         stage('Prepare reports directory') {
             steps {
                 dir("${env.PROJECT_DIR}") {
-                    withEnv([
-                        "MODULE_ID=${params.module.trim().toLowerCase()}",
-                        "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
-                        "RUN_FLOW=${params.flow}",
-                        "RUN_FOLDER_NAME=${params.folderName}",
-                        "RUN_COLLECTION_FILE=${params.collectionFile}",
-                        "RUN_ENVIRONMENT_FILE=${params.environmentFile}",
-                        "RUN_ENVIRONMENT=${params.environment}",
-                        "RUN_PLATFORM=${params.platform}",
-                        "RUN_SERVICE_TYPE=${params.serviceType}",
-                        "RUN_DEVICE=${params.device}",
-                        "RUN_REGION=${params.region}",
-                        "RUN_ENDPOINT_TYPE=${params.endpointType}",
-                        "RUN_USER_FLOW=${params.userFlow ?: ''}"
-                    ]) {
-                        sh '''
-                            set -eu
-                            mkdir -p "$REPORTS_DIR"
-
-                            node -e '
-                              const fs = require("fs");
-                              const path = require("path");
-
-                              const collection = path.basename(process.env.RUN_COLLECTION_FILE || "REGRESIVOS.postman_collection.json")
-                                .replace(/\.postman_collection\.json$/i, "")
-                                .replace(/\.json$/i, "");
-
-                              const data = {
-                                execution: {
-                                  status: "RUNNING",
-                                  module: process.env.MODULE_ID,
-                                  runId: process.env.RUN_ID,
-                                  collection,
-                                  buildNumber: process.env.BUILD_NUMBER,
-                                  startedAt: new Date().toISOString(),
-                                  finishedAt: null,
-                                  durationMs: null
-                                },
-                                parameters: {
-                                  module: process.env.MODULE_ID,
-                                  flow: process.env.RUN_FLOW,
-                                  folderName: process.env.RUN_FOLDER_NAME,
-                                  collectionFile: process.env.RUN_COLLECTION_FILE,
-                                  environmentFile: process.env.RUN_ENVIRONMENT_FILE,
-                                  environment: process.env.RUN_ENVIRONMENT,
-                                  platform: process.env.RUN_PLATFORM,
-                                  serviceType: process.env.RUN_SERVICE_TYPE,
-                                  device: process.env.RUN_DEVICE,
-                                  region: process.env.RUN_REGION,
-                                  endpointType: process.env.RUN_ENDPOINT_TYPE,
-                                  userFlow: process.env.RUN_USER_FLOW || null
-                                },
-                                summary: {
-                                  total: 0,
-                                  passed: 0,
-                                  failed: 0,
-                                  currentApi: null
-                                },
-                                apis: []
-                              };
-
-                              fs.writeFileSync("reports/live-progress.json", JSON.stringify(data, null, 2));
-                            '
-                        '''
-                    }
+                    sh '''
+                        set -eu
+                        mkdir -p "$REPORTS_DIR"
+                    '''
                 }
             }
         }
