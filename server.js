@@ -451,7 +451,7 @@ async function monitorRun(moduleConfig, runId) {
     const jenkinsStatus = normalizeStatus(buildInfo.result || (building ? 'RUNNING' : 'UNKNOWN'));
     const status = getRunStatusFromJenkins(run, jenkinsStatus, building);
 
-    const patch = {
+    let patch = {
       status,
       result: status,
       reports: buildReports({ ...run, status })
@@ -467,6 +467,22 @@ async function monitorRun(moduleConfig, runId) {
         ...run.qaConsole,
         { timestamp: patch.finishedAt, level: status === 'SUCCESS' ? 'info' : 'error', message: `Execution finished with ${status}` }
       ];
+
+      const artifactPatch = await getLiveProgressPatchFromJenkinsArtifact({ ...run, ...patch });
+      if (artifactPatch) {
+        patch = {
+          ...patch,
+          ...artifactPatch,
+          status,
+          result: status,
+          finishedAt: artifactPatch.finishedAt || patch.finishedAt,
+          reports: {
+            ...patch.reports,
+            ...artifactPatch.reports,
+            links: buildReportLinks({ ...run, ...patch, ...artifactPatch })
+          }
+        };
+      }
     }
 
     runStore.update(moduleConfig.id, runId, patch);
@@ -474,7 +490,26 @@ async function monitorRun(moduleConfig, runId) {
 }
 
 async function refreshRunFromJenkins(run) {
-  if (!run.buildNumber || FINAL_STATUSES.has(String(run.status || '').toUpperCase())) {
+  if (!run.buildNumber) {
+    return run;
+  }
+
+  if (FINAL_STATUSES.has(String(run.status || '').toUpperCase())) {
+    if (!run.apiExecutions?.length) {
+      const artifactPatch = await getLiveProgressPatchFromJenkinsArtifact(run);
+
+      if (artifactPatch) {
+        return runStore.update(run.module, run.id, {
+          ...artifactPatch,
+          reports: {
+            ...run.reports,
+            ...artifactPatch.reports,
+            links: buildReportLinks({ ...run, ...artifactPatch })
+          }
+        });
+      }
+    }
+
     return run;
   }
 
@@ -482,7 +517,7 @@ async function refreshRunFromJenkins(run) {
     const buildInfo = await getBuildInfo(run);
     const jenkinsStatus = normalizeStatus(buildInfo.result || (buildInfo.building ? 'RUNNING' : 'UNKNOWN'));
     const status = getRunStatusFromJenkins(run, jenkinsStatus, Boolean(buildInfo.building));
-    const patch = {
+    let patch = {
       status,
       result: status,
       reports: buildReports({ ...run, status })
@@ -492,9 +527,67 @@ async function refreshRunFromJenkins(run) {
       patch.finishedAt = new Date().toISOString();
     }
 
+    if (!buildInfo.building) {
+      const artifactPatch = await getLiveProgressPatchFromJenkinsArtifact({ ...run, ...patch });
+      if (artifactPatch) {
+        patch = {
+          ...patch,
+          ...artifactPatch,
+          status,
+          result: status,
+          finishedAt: artifactPatch.finishedAt || patch.finishedAt,
+          reports: {
+            ...patch.reports,
+            ...artifactPatch.reports,
+            links: buildReportLinks({ ...run, ...patch, ...artifactPatch })
+          }
+        };
+      }
+    }
+
     return runStore.update(run.module, run.id, patch);
   } catch (error) {
     return runStore.update(run.module, run.id, { lastError: error.message });
+  }
+}
+
+async function getLiveProgressPatchFromJenkinsArtifact(run) {
+  if (!run.buildNumber) return null;
+
+  try {
+    const response = await axios.get(`${getJobUrl(run.jobName || run.config.jobName)}/${run.buildNumber}/artifact/reports/live-progress.json`, {
+      auth: getJenkinsAuth(),
+      responseType: 'json',
+      transformResponse: value => value
+    });
+
+    const progress = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+
+    if (!progress || typeof progress !== 'object' || !progress.execution) {
+      return null;
+    }
+
+    const patch = mapProgressToRun(progress, run);
+    const buildNumber = progress.execution?.buildNumber || run.buildNumber;
+    const withBuild = {
+      ...patch,
+      buildNumber,
+      buildUrl: buildNumber ? `${getJobUrl(run.jobName || run.config.jobName)}/${buildNumber}/` : run.buildUrl,
+      reports: {
+        ...run.reports,
+        ...patch.reports,
+        liveProgress: true
+      }
+    };
+
+    console.log(
+      `[LIVE-PROGRESS] Synced artifact ${run.module}/${run.id} status=${withBuild.status} build=${withBuild.buildNumber || '--'} apis=${withBuild.apiExecutions?.length || 0}`
+    );
+
+    return withBuild;
+  } catch (error) {
+    console.warn(`[LIVE-PROGRESS] Artifact sync skipped for ${run.module}/${run.id}: ${error.message}`);
+    return null;
   }
 }
 

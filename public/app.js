@@ -1,4 +1,5 @@
 const RUN_INTERVAL_MS = 1500;
+const FINAL_SETTLE_POLLS = 6;
 const FINAL_STATUSES = ['SUCCESS', 'FAILURE', 'STOPPED', 'ABORTED', 'CLEARED', 'UNKNOWN'];
 
 let selectedApiId = null;
@@ -8,6 +9,7 @@ let currentRunId = null;
 let lastRun = null;
 let lastReports = null;
 let stoppingRunId = null;
+let finalSettlePolls = 0;
 
 const form = document.getElementById('runForm');
 const moduleSelect = document.getElementById('moduleSelect');
@@ -30,6 +32,7 @@ form.addEventListener('submit', async event => {
 
   selectedApiId = null;
   currentModule = moduleId;
+  finalSettlePolls = 0;
 
   setRunningUi(true, 'QUEUED');
   clearDashboardView('Run enviado a Jenkins. Esperando progreso...');
@@ -67,6 +70,7 @@ form.addEventListener('submit', async event => {
 moduleSelect.addEventListener('change', async () => {
   currentModule = moduleSelect.value;
   currentRunId = null;
+  finalSettlePolls = 0;
   stopLiveRefresh();
   clearDashboardView();
   await loadFlows(currentModule);
@@ -109,6 +113,7 @@ clearButton.addEventListener('click', () => {
   currentRunId = null;
   lastRun = null;
   lastReports = null;
+  finalSettlePolls = 0;
   clearDashboardView('Resultados limpiados.');
   renderJobStatus(null);
   setRunningUi(false);
@@ -222,6 +227,7 @@ async function refreshLatestRun() {
     renderRun(latestRun);
 
     if (!isFinal(latestRun.status)) {
+      finalSettlePolls = 0;
       startLiveRefresh();
     }
   } catch (error) {
@@ -256,8 +262,14 @@ async function refreshRun() {
     if (isFinal(lastRun.status)) {
       stoppingRunId = null;
       setRunningUi(false, lastRun.status);
-      stopLiveRefresh();
+
+      if (hasRenderableProgress(lastRun) || finalSettlePolls >= FINAL_SETTLE_POLLS) {
+        stopLiveRefresh();
+      } else {
+        finalSettlePolls++;
+      }
     } else {
+      finalSettlePolls = 0;
       setRunningUi(true, lastRun.status);
     }
   } catch (error) {
@@ -265,6 +277,10 @@ async function refreshRun() {
     serverStatus.className = 'pill pill-failed';
     console.error('Error refreshing run', error);
   }
+}
+
+function hasRenderableProgress(run = {}) {
+  return Boolean((run.apiExecutions || []).length || run.summary?.total);
 }
 
 function mergeRunProgress(run, progress) {

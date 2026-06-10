@@ -120,7 +120,10 @@ function buildQaConsole(progress, run, status) {
 function mapProgressToRun(progress, run) {
   const execution = progress.execution || {};
   const status = normalizeStatus(execution.status || run.status || 'RUNNING');
-  const apiExecutions = (progress.apis || []).filter(isVisibleServiceRequest).map(mapApi);
+  const rawApis = Array.isArray(progress.apis)
+    ? progress.apis
+    : (Array.isArray(progress.apiExecutions) ? progress.apiExecutions : []);
+  const apiExecutions = rawApis.filter(isVisibleServiceRequest).map(mapApi);
   const summary = {
     total: apiExecutions.length,
     passed: apiExecutions.filter(api => api.status === 'SUCCESS').length,
