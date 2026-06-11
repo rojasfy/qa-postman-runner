@@ -9,7 +9,7 @@ qa-postman-runner/
 |-- collections/
 |   `-- REGRESIVOS.postman_collection.json
 |-- docs/
-|   `-- README.md
+|   `-- flujo-ejecucion-modular.md
 |-- environments/
 |   `-- PRE-UAT-PROD-CLAROVIDEO.postman_environment.json
 |-- jenkins/
