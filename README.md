@@ -1,80 +1,28 @@
 # QA Postman Runner
 
-Dashboard/API local para ejecutar regresiones API de Postman con Jenkins y Newman, usando un modelo modular de runs por `runId`.
+Dashboard y API local para ejecutar regresiones Postman con Newman desde un unico job Jenkins parametrizado. La arquitectura activa es modular: el backend recibe el modulo, resuelve el flujo, dispara Jenkins y conserva el estado temporal del run en memoria.
 
-## Estado actual
-
-La FASE 6 conecta el dashboard visual actual con la API modular creada en FASE 5.
-
-```text
-Version vieja clonada:
-  rutas: /run/player, /status, /reports/live-progress.json
-  Jenkins Job: player
-  Jenkinsfile: jenkins/Jenkinsfile.player
-
-Version FASE 6:
-  rutas: /api/ply/runs, /api/ply/runs/:runId/status, /api/ply/runs/:runId/reports
-  Jenkins Job: PLY
-  Jenkinsfile: jenkins/Jenkinsfile.ply
-```
-
-El nuevo `server.js` no conserva rutas legacy.
-
-## Arquitectura
-
-Todos los modulos usan una unica coleccion Postman y un unico environment:
-
-```text
-collections/REGRESIVOS.postman_collection.json
-environments/PRE-UAT-PROD-CLAROVIDEO.postman_environment.json
-```
-
-La relacion correcta es:
-
-```text
-Modulo seleccionado -> Job Jenkins
-Flujo seleccionado -> folder Newman dentro de REGRESIVOS
-```
-
-Ejemplo PLY:
-
-```text
-module = ply
-jobName = PLY
-flow = getmedia
-folderName = Getmedia
-collectionFile = collections/REGRESIVOS.postman_collection.json
-environmentFile = environments/PRE-UAT-PROD-CLAROVIDEO.postman_environment.json
-```
-
-No se debe asumir que `moduleName`, `jobName`, `collectionName` y `folderName` son iguales.
-
-## Estructura versionable
+## Estructura vigente
 
 ```text
 qa-postman-runner/
 |-- collections/
 |   `-- REGRESIVOS.postman_collection.json
+|-- docs/
+|   `-- README.md
 |-- environments/
 |   `-- PRE-UAT-PROD-CLAROVIDEO.postman_environment.json
 |-- jenkins/
-|   |-- Jenkinsfile.player
-|   `-- Jenkinsfile.ply
+|   `-- Jenkinsfile.modular
 |-- public/
 |-- reports/
 |   `-- .gitkeep
 |-- runners/
-|   |-- player.js
-|   `-- ply.js
+|   `-- modular.js
 |-- src/
 |   |-- modules.js
 |   |-- progressMapper.js
 |   `-- runStore.js
-|-- docs/
-|   |-- fase-4.md
-|   |-- fase-5.md
-|   |-- fase-6.md
-|   `-- optimizacion-tiempos.md
 |-- .env.example
 |-- .gitignore
 |-- package.json
@@ -83,13 +31,23 @@ qa-postman-runner/
 `-- server.js
 ```
 
-No se versionan:
+`legacy/` esta ignorado por Git y no forma parte de la arquitectura activa.
+
+## Modulos activos
+
+Los modulos vigentes estan definidos en `src/modules.js` y comparten la coleccion y el environment configurados por variables de entorno.
 
 ```text
-.env
-node_modules/
-reports/*.json
-reports/*.html
+ply:
+  - Getmedia
+  - Assets
+  - Tracking - Bookmark
+
+usr:
+  - Perfiles
+  - Favorited
+  - ControlPin
+  - Reminder
 ```
 
 ## Configuracion
@@ -100,7 +58,7 @@ Instalar dependencias:
 npm install
 ```
 
-Crear `.env` desde `.env.example` y completar las credenciales Jenkins:
+Crear `.env` desde `.env.example` y completar credenciales Jenkins:
 
 ```bash
 cp .env.example .env
@@ -109,72 +67,91 @@ cp .env.example .env
 Variables principales:
 
 ```env
+PORT=3000
 JENKINS_BASE_URL=http://localhost:8080
 JENKINS_USER=admin
 JENKINS_API_TOKEN=REEMPLAZAR_CON_API_TOKEN_REAL
-JENKINS_DASHBOARD_BASE_URL=http://<IP_DE_TU_HOST>:3000
-
-PLY_JOB_NAME=PLY
+JENKINS_DASHBOARD_BASE_URL=http://host.docker.internal:3000
+REGRESIVOS_JOB_NAME=REGRESIVOS-MODULAR
 POSTMAN_COLLECTION_FILE=collections/REGRESIVOS.postman_collection.json
 POSTMAN_ENVIRONMENT_FILE=environments/PRE-UAT-PROD-CLAROVIDEO.postman_environment.json
 RUN_STORE_LIMIT_PER_MODULE=50
 ```
 
-Levantar el dashboard/API:
+Levantar dashboard y API:
 
 ```bash
 npm run server
 ```
 
-## Endpoints FASE 6
+## Ejecutar modular.js localmente
 
-```http
-GET  /api/modules
-GET  /api/ply/flows
-GET  /api/ply/runs
-POST /api/ply/runs
-GET  /api/ply/runs/:runId
-GET  /api/ply/runs/:runId/status
-GET  /api/ply/runs/:runId/progress
-POST /api/ply/runs/:runId/progress
-GET  /api/ply/runs/:runId/reports
-POST /api/ply/runs/:runId/stop
+El runner modular ejecuta Newman contra el folder indicado por `--folderName` y genera reportes en `reports/`.
+
+Ejemplo PLY:
+
+```bash
+npm run modular -- \
+  --module ply \
+  --runId local-ply-001 \
+  --collectionFile collections/REGRESIVOS.postman_collection.json \
+  --environmentFile environments/PRE-UAT-PROD-CLAROVIDEO.postman_environment.json \
+  --flow getmedia \
+  --folderName Getmedia \
+  --environment uat-berc \
+  --platform aws \
+  --serviceType ott \
+  --device web \
+  --region brasil \
+  --endpointType origin
 ```
 
-Payload ejemplo para crear run:
+Ejemplo USR:
 
-```json
-{
-  "flow": "getmedia",
-  "environment": "preuat",
-  "platform": "aws",
-  "region": "mexico",
-  "device": "web",
-  "endpointType": "origin"
-}
+```bash
+npm run modular -- \
+  --module usr \
+  --runId local-usr-001 \
+  --collectionFile collections/REGRESIVOS.postman_collection.json \
+  --environmentFile environments/PRE-UAT-PROD-CLAROVIDEO.postman_environment.json \
+  --flow perfiles \
+  --folderName Perfiles \
+  --environment uat-berc \
+  --platform aws \
+  --serviceType ott \
+  --device web \
+  --region brasil \
+  --endpointType origin
 ```
 
-## Jenkins PLY
+## Parametros dinamicos soportados
 
-Crear un nuevo Job Jenkins llamado `PLY` como Pipeline script from SCM:
+El backend, Jenkins y `runners/modular.js` usan estos parametros:
 
 ```text
-Definition: Pipeline script from SCM
-SCM: Git
-Repository URL: <URL_DEL_REPOSITORIO>
-Credentials: <credencial Git si aplica>
-Branch Specifier: */main
-Script Path: jenkins/Jenkinsfile.ply
-Lightweight checkout: enabled
+module
+runId
+collectionFile
+environmentFile
+flow
+folderName
+environment
+platform
+serviceType
+device
+region
+endpointType
+userFlow
+dashboardBaseUrl
+liveProgressMode
+liveProgressTimeoutMs
 ```
 
-Durante la ejecucion, Jenkins publica progreso al backend:
+`folderName` es el nombre exacto del folder Newman dentro de la coleccion. `flow` es el identificador usado por el dashboard/API para resolver ese folder.
 
-```http
-POST /api/ply/runs/{runId}/progress
-```
+## Reportes Newman
 
-Los artifacts del Job son:
+Cada ejecucion genera artifacts en `reports/`:
 
 ```text
 reports/live-progress.json
@@ -182,11 +159,57 @@ reports/newman-result.json
 reports/newman-report.html
 ```
 
-## Documentacion
+`live-progress.json` alimenta el progreso del dashboard. Durante la ejecucion Jenkins publica un payload liviano en modo `filtered`; al finalizar, el backend puede cargar el detalle completo desde el artifact final.
+
+## Uso desde Jenkins
+
+Crear un unico job Pipeline llamado `REGRESIVOS-MODULAR`:
 
 ```text
-docs/fase-4.md
-docs/fase-5.md
-docs/optimizacion-tiempos.md
+Definition: Pipeline script from SCM
+SCM: Git
+Repository URL: <URL_DEL_REPOSITORIO>
+Credentials: <credencial Git si aplica>
+Branch Specifier: */main
+Script Path: jenkins/Jenkinsfile.modular
+Lightweight checkout: enabled
 ```
 
+El job recibe parametros desde el backend y ejecuta:
+
+```bash
+node runners/modular.js
+```
+
+Jenkins publica progreso al backend con:
+
+```http
+POST /api/:module/runs/:runId/progress
+```
+
+Para Jenkins en Docker sobre Windows, el valor recomendado es:
+
+```text
+dashboardBaseUrl=http://host.docker.internal:3000
+```
+
+Validar conectividad desde el agente Jenkins:
+
+```bash
+curl -i http://host.docker.internal:3000/api/modules
+```
+
+## Endpoints principales
+
+```http
+GET  /api/modules
+GET  /api/:module/flows
+GET  /api/:module/runs
+POST /api/:module/runs
+GET  /api/:module/runs/:runId
+GET  /api/:module/runs/:runId/status
+GET  /api/:module/runs/:runId/progress
+POST /api/:module/runs/:runId/progress
+GET  /api/:module/runs/:runId/reports
+POST /api/:module/runs/:runId/stop
+```

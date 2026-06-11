@@ -2,32 +2,39 @@
 
 ## A. Resumen ejecutivo
 
-El dashboard permite lanzar una regresion modular desde `public/live-viewer.html`. El usuario selecciona modulo, flujo y parametros de ejecucion. La logica de `public/app.js` toma esos valores del formulario `runForm` y llama `POST /api/:module/runs`.
+El dashboard permite lanzar regresiones modulares desde la interfaz web servida por `server.js`. El usuario selecciona modulo, flujo y parametros de ejecucion. La logica de `public/app.js` toma los valores del formulario `runForm` y llama `POST /api/:module/runs`.
 
-El backend en `server.js` recibe la solicitud, valida el modulo y los parametros, resuelve el flujo seleccionado contra el folder Newman configurado en `src/modules.js`, crea un run temporal en `RunStore` y dispara Jenkins mediante `triggerJenkinsRun()`. Jenkins ejecuta el job configurado para el modulo, en PLY el job es `PLY`, usando `jenkins/Jenkinsfile.ply`. El pipeline invoca `node runners/ply.js`, que ejecuta Newman contra la coleccion y environment compartidos, genera reportes y publica progreso al backend.
+El backend recibe la solicitud, valida el modulo y los parametros, resuelve el flujo seleccionado contra el folder Newman configurado en `src/modules.js`, crea un run temporal en `RunStore` y dispara un unico job Jenkins parametrizado mediante `triggerJenkinsRun()`.
 
-El frontend guarda el `runId` devuelto por el backend y arranca polling cada `1500 ms`. Consulta status, progress y reports del run para renderizar estado, resumen, APIs visibles y links de reportes. La memoria `RunStore` es temporal: vive en RAM y se pierde al reiniciar el backend.
+El job Jenkins vigente es `REGRESIVOS-MODULAR`, definido por `REGRESIVOS_JOB_NAME`, y usa `jenkins/Jenkinsfile.modular`. El pipeline invoca `node runners/modular.js`, que ejecuta Newman contra la coleccion y environment compartidos, genera reportes y publica progreso al backend usando el endpoint dinamico:
+
+```http
+POST /api/:module/runs/:runId/progress
+```
+
+Durante la ejecucion, Jenkins publica un payload liviano en modo `filtered`. Al finalizar, el backend puede cargar el detalle completo desde el artifact final de Jenkins. El frontend guarda el `runId` devuelto por el backend y hace polling cada `1500 ms` contra status, progress y reports para renderizar estado, resumen, APIs visibles y links de reportes.
+
+`RunStore` es memoria temporal en RAM. Si el backend se reinicia, se pierde el historial local de runs.
 
 ## B. Diagrama Mermaid - flowchart
 
 ```mermaid
 flowchart TD
-  subgraph Frontend[Frontend - public/live-viewer.html + public/app.js]
+  subgraph Frontend[Frontend - public/app.js]
     U[Usuario pulsa Run]
-    F1[form.addEventListener submit]
+    F1[form submit]
     F2[Lee FormData de runForm]
     F3[POST /api/:module/runs]
     F4[Guarda currentRunId]
     F5[startLiveRefresh]
     F6[Polling refreshRun cada 1500 ms]
-    F7[Render: renderRun, renderJobStatus, renderApis, renderReportLinks]
+    F7[Render: estado, resumen, APIs y reportes]
     S1[Usuario pulsa Stop]
-    S2[stopButton.addEventListener click]
-    S3[POST /api/:module/runs/:runId/stop]
+    S2[POST /api/:module/runs/:runId/stop]
   end
 
   subgraph Backend[Backend - server.js]
-    B1[Handler inline POST /api/:module/runs]
+    B1[POST /api/:module/runs]
     B2[getModuleOr404]
     B3[createRun]
     B4[resolveFlow]
@@ -35,13 +42,13 @@ flowchart TD
     B6[triggerJenkinsRun]
     B7[monitorRun]
     B8[refreshRunFromJenkins]
-    B11[Handler inline POST /api/:module/runs/:runId/progress]
-    B12[mapProgressToRun]
-    B9[Handler inline POST /api/:module/runs/:runId/stop]
-    B10[stopRunInJenkins]
+    B9[POST /api/:module/runs/:runId/progress]
+    B10[mapProgressToRun]
+    B11[POST /api/:module/runs/:runId/stop]
+    B12[stopRunInJenkins]
   end
 
-  subgraph RunStore[src/runStore.js]
+  subgraph Store[RunStore - src/runStore.js]
     R1[RunStore.create]
     R2[runsByModule Map]
     R3[RunStore.update]
@@ -50,28 +57,31 @@ flowchart TD
     R6[RunStore.prune]
   end
 
-  subgraph Jenkins[jenkins/Jenkinsfile.ply + runners/ply.js]
-    J1[Jenkins Job PLY]
-    J2[Validate parameters]
-    J3[Prepare reports directory]
-    J4[Install dependencies]
-    J5[node runners/ply.js]
-    J6[newman.run]
-    J7[reports/live-progress.json]
-    J8[reports/newman-result.json]
-    J9[reports/newman-report.html]
-    J10[publish_live_progress]
+  subgraph Jenkins[Jenkins - jenkins/Jenkinsfile.modular]
+    J1[Job REGRESIVOS-MODULAR]
+    J2[Valida parametros]
+    J3[Prepara reports]
+    J4[Ejecuta runners/modular.js]
+    J5[newman.run]
+    J6[reports/live-progress.json]
+    J7[reports/newman-result.json]
+    J8[reports/newman-report.html]
+    J9[publish_live_progress filtered]
+    J10[archiveArtifacts]
   end
 
   U --> F1 --> F2 --> F3 --> B1 --> B2 --> B3 --> R1 --> R2
-  B3 --> B4 --> B5 --> B6 --> J1 --> J2 --> J3 --> J4 --> J5 --> J6
-  J6 --> J7
-  J6 --> J8
-  J6 --> J9
-  J7 --> J10 --> B11 --> B12 --> R3
+  B3 --> B4 --> B5 --> B6 --> J1 --> J2 --> J3 --> J4 --> J5
+  J5 --> J6
+  J5 --> J7
+  J5 --> J8
+  J6 --> J9 --> B9 --> B10 --> R3
+  J6 --> J10
+  J7 --> J10
+  J8 --> J10
   B7 --> R3
   B1 --> F4 --> F5 --> F6 --> B8 --> R4 --> F7
-  S1 --> S2 --> S3 --> B9 --> B10 --> J1 --> B7 --> R3 --> F7
+  S1 --> S2 --> B11 --> B12 --> J1 --> B7 --> R3 --> F7
 ```
 
 ## C. Diagrama Mermaid - sequenceDiagram
@@ -82,20 +92,19 @@ sequenceDiagram
   participant Frontend as Frontend public/app.js
   participant Backend as Backend server.js
   participant Store as RunStore src/runStore.js
-  participant Jenkins as Jenkins Job PLY
-  participant Newman as runners/ply.js + Newman
+  participant Jenkins as Jenkins REGRESIVOS-MODULAR
+  participant Newman as runners/modular.js + Newman
 
-  Usuario->>Frontend: Pulsa Run en runButton
-  Frontend->>Frontend: form.addEventListener('submit')
+  Usuario->>Frontend: Pulsa Run
+  Frontend->>Frontend: form submit
   Frontend->>Frontend: FormData(runForm), delete payload.module
-  Frontend->>Backend: POST /api/ply/runs con body JSON
+  Frontend->>Backend: POST /api/:module/runs con body JSON
   Backend->>Backend: getModuleOr404(req.params.module)
-  Backend->>Backend: createRun(moduleConfig, req.body)
-  Backend->>Backend: resolveFlow(moduleConfig, params.flow, params.folderName || params.folder)
+  Backend->>Backend: resolveFlow(moduleConfig, params.flow, params.folderName)
   Backend->>Backend: validateRunParams(params, flow)
   Backend->>Store: runStore.create(input)
-  Store-->>Backend: run con id generado por crypto.randomUUID()
-  Backend->>Jenkins: triggerJenkinsRun() POST /job/PLY/buildWithParameters
+  Store-->>Backend: run con runId unico
+  Backend->>Jenkins: POST /job/REGRESIVOS-MODULAR/buildWithParameters
   Jenkins-->>Backend: Location con queue item
   Backend->>Store: runStore.update(run.id, queueId)
   Backend-->>Frontend: 202 { ok, message, data: run }
@@ -103,35 +112,45 @@ sequenceDiagram
   Frontend->>Frontend: startLiveRefresh()
 
   loop cada 1500 ms
-    Frontend->>Backend: GET /api/ply/runs/:runId/status
-    Backend->>Store: getRunOr404 -> runStore.get(module, runId)
-    Backend->>Jenkins: getBuildInfo(run) si hay buildNumber y no es final
-    Backend->>Store: runStore.update(status, reports, finishedAt si aplica)
+    Frontend->>Backend: GET /api/:module/runs/:runId/status
+    Backend->>Store: runStore.get(module, runId)
+    Backend->>Jenkins: getBuildInfo(run) si hay buildNumber
+    Backend->>Store: runStore.update(status, reports)
     Backend-->>Frontend: { ok: true, data: run }
 
-    Frontend->>Backend: GET /api/ply/runs/:runId/progress
+    Frontend->>Backend: GET /api/:module/runs/:runId/progress
     Backend->>Store: runStore.get(module, runId)
-    Backend-->>Frontend: { ok: true, data: resumen/progreso }
+    Backend-->>Frontend: { ok: true, data: progreso }
 
-    Frontend->>Backend: GET /api/ply/runs/:runId/reports
+    Frontend->>Backend: GET /api/:module/runs/:runId/reports
     Backend->>Store: runStore.get(module, runId)
     Backend-->>Frontend: { ok: true, data: reports }
 
-    Frontend->>Frontend: renderRun(), renderJobStatus(), renderApis(), renderReportLinks()
+    Frontend->>Frontend: renderRun(), renderApis(), renderReportLinks()
   end
 
-  Jenkins->>Newman: node runners/ply.js con parametros
+  Jenkins->>Newman: node runners/modular.js con parametros
   Newman->>Newman: newman.run(...)
-  Newman->>Jenkins: genera reports/live-progress.json, newman-result.json, newman-report.html
-  Jenkins->>Backend: POST /api/ply/runs/:runId/progress
+  Newman->>Jenkins: reports/live-progress.json
+  Newman->>Jenkins: reports/newman-result.json
+  Newman->>Jenkins: reports/newman-report.html
+  Jenkins->>Backend: POST /api/:module/runs/:runId/progress
   Backend->>Store: mapProgressToRun() + runStore.update()
 
+  alt Status final SUCCESS o FAILURE
+    Frontend->>Backend: GET /api/:module/runs/:runId/progress?detail=full
+    Backend->>Jenkins: GET artifact reports/live-progress.json
+    Backend->>Store: actualiza detalle completo del run
+    Backend-->>Frontend: progreso final completo
+    Frontend->>Frontend: reemplaza detalle filtrado por detalle completo
+  end
+
   alt Usuario pulsa Stop
-    Usuario->>Frontend: Pulsa stopButton
-    Frontend->>Backend: POST /api/ply/runs/:runId/stop
+    Usuario->>Frontend: Pulsa Stop
+    Frontend->>Backend: POST /api/:module/runs/:runId/stop
     Backend->>Store: runStore.get(module, runId)
     alt run tiene buildNumber
-      Backend->>Jenkins: POST /job/{jobName}/{buildNumber}/stop
+      Backend->>Jenkins: POST /job/REGRESIVOS-MODULAR/{buildNumber}/stop
     else run tiene queueId
       Backend->>Jenkins: POST /queue/cancelItem?id={queueId}
     end
@@ -142,40 +161,37 @@ sequenceDiagram
 
 ## D. Tabla de trazabilidad
 
-| Fase | Archivo involucrado | Funcion ejecutada | Endpoint | Entrada | Salida | Estado generado |
+| Paso | Archivo involucrado | Funcion ejecutada | Endpoint | Entrada | Salida | Estado generado |
 |---|---|---|---|---|---|---|
-| Carga inicial del dashboard | `public/app.js` | `initDashboard()` | `GET /api/modules`, `GET /api/:module/flows`, `GET /api/:module/runs` | Sin body. Usa `currentModule = 'ply'` | Modulos, flujos y ultimo run si existe | Sin cambio de estado |
-| Selector de flujos | `public/app.js` | `loadFlows(moduleId)` | `GET /api/${moduleId}/flows` | `moduleId` desde `moduleSelect` | Lista `flows` | Sin cambio de estado |
-| Click Run | `public/live-viewer.html`, `public/app.js` | `form.addEventListener('submit', ...)` | N/A evento UI | Campos de `runForm`: `module`, `flow`, `environment`, `platform`, `serviceType`, `device`, `region`, `endpointType` | `payload` sin `module`; `module` va en URL | UI pasa a `QUEUED` con `setRunningUi(true, 'QUEUED')` |
-| Crear run | `public/app.js` | handler submit | `POST /api/:module/runs` | Body JSON: `flow`, `environment`, `platform`, `serviceType`, `device`, `region`, `endpointType` | Espera `{ ok, message, data: run }` | `currentRunId = data.data.id` |
-| Recibir run | `server.js` | Handler inline `app.post('/api/:module/runs', ...)` | `POST /api/:module/runs` | `req.params.module`, `req.body` | `202` con `data: run` | Depende de `createRun()` |
+| Carga inicial del dashboard | `public/app.js` | `initDashboard()` | `GET /api/modules`, `GET /api/:module/flows`, `GET /api/:module/runs` | Sin body | Modulos, flujos y ultimo run | Sin cambio de estado |
+| Selector de modulo | `public/app.js` | `moduleSelect.addEventListener('change')` | `GET /api/:module/flows` | `moduleId` | Lista de flows | Limpia run activo en UI |
+| Selector de flujos | `public/app.js` | `loadFlows(moduleId)` | `GET /api/:module/flows` | `moduleId` | Lista `flows` | Sin cambio de estado |
+| Click Run | `public/app.js` | `form.addEventListener('submit')` | N/A evento UI | Campos de `runForm` | `payload` sin `module`; `module` va en URL | UI pasa a `QUEUED` |
+| Crear run | `public/app.js` | handler submit | `POST /api/:module/runs` | `flow`, `environment`, `platform`, `serviceType`, `device`, `region`, `endpointType`, `userFlow` | `{ ok, message, data: run }` | `currentRunId = data.data.id` |
+| Recibir run | `server.js` | `app.post('/api/:module/runs')` | `POST /api/:module/runs` | `req.params.module`, `req.body` | `202` con `data: run` | Depende de `createRun()` |
 | Validar modulo | `server.js` | `getModuleOr404(moduleId, res)` | Interno | `moduleId` | `moduleConfig` o 404 JSON | Sin cambio de estado |
+| Resolver flujo | `src/modules.js` | `resolveFlow(module, requestedFlow, fallbackFolder)` | Interno | `params.flow`, `params.folderName` | Flow con `id`, `label`, `folderName` | Sin cambio de estado |
 | Crear estado inicial | `server.js` | `createRun(moduleConfig, params)` | Interno | `moduleConfig`, `params` | `queuedRun` | `QUEUED` |
-| Resolver flujo | `src/modules.js` | `resolveFlow(module, requestedFlow, fallbackFolder)` | Interno | `params.flow`, fallback `params.folderName || params.folder` | Objeto flow con `id`, `label`, `folderName` | Sin cambio de estado |
-| Validar parametros | `server.js` | `validateRunParams(params, flow)` | Interno | `environment`, `platform`, `device`, `region`, `endpointType`, `flow` | Error 400 si falta alguno | Sin cambio de estado |
 | Guardar run | `src/runStore.js` | `RunStore.create(input)` | Interno | Campos del run inicial | Run guardado en `runsByModule` | `QUEUED`, `startedAt`, `updatedAt` |
-| Generar runId | `src/runStore.js` | `crypto.randomUUID()` dentro de `create()` | Interno | Si `input.id` no existe | UUID en `run.id` | Run identificable por `runId` |
-| Disparar Jenkins | `server.js` | `triggerJenkinsRun(moduleConfig, run)` | `POST {JENKINS_BASE_URL}/job/{jobName}/buildWithParameters` | `URLSearchParams` con parametros Jenkins | Headers con `location` de queue | Backend obtiene `queueId` |
-| Actualizar queue | `server.js`, `src/runStore.js` | `runStore.update(run.module, run.id, { queueId })` | Interno | `queueId` extraido por `extractQueueIdFromLocation()` | Run actualizado | Sigue `QUEUED` |
-| Esperar buildNumber | `server.js` | `monitorRun()` -> `waitForBuildNumber()` -> `getQueueInfo()` | `GET /queue/item/{queueId}/api/json` en Jenkins | `queueId` | `buildNumber`, `buildUrl` | `RUNNING` cuando Jenkins asigna build |
-| Jenkins pipeline | `jenkins/Jenkinsfile.ply` | Pipeline `stages` | N/A | Parametros del job | Ejecuta stages | Jenkins BUILD en progreso |
-| Ejecutar Newman | `jenkins/Jenkinsfile.ply` | Shell `node runners/ply.js ...` | N/A | `runId`, `collectionFile`, `environmentFile`, `flow`, `folderName`, ambiente/plataforma/etc. | Proceso Node/Newman | `RUNNING` en `live-progress.json` |
-| Newman runner | `runners/ply.js` | `run()` -> `newman.run(...)` | N/A | CLI args y archivos Postman | Reportes JSON/HTML/progreso | `SUCCESS` o `FAILURE` en `finish()` |
-| Publicar progreso | `jenkins/Jenkinsfile.ply` | `publish_live_progress()` | `POST /api/ply/runs/${PLY_RUN_ID}/progress` | `reports/live-progress.json` | Backend responde JSON | Backend actualiza RunStore |
-| Mapear progreso | `server.js`, `src/progressMapper.js` | `mapProgressToRun(progress, run)` | `POST /api/:module/runs/:runId/progress` | JSON de progreso | Patch para run | Status desde `progress.execution.status` |
-| Polling de status | `public/app.js` | `startLiveRefresh()` -> `refreshRun()` | `GET /api/:module/runs/:runId/status` | `currentModule`, `currentRunId` | `{ ok, data: run }` | UI refleja estado actual |
-| Polling de progress | `public/app.js` | `refreshRun()` | `GET /api/:module/runs/:runId/progress` | `currentModule`, `currentRunId` | Summary, apiExecutions, steps | UI renderiza APIs visibles |
-| Polling de reports | `public/app.js` | `refreshRun()` | `GET /api/:module/runs/:runId/reports` | `currentModule`, `currentRunId` | `reports` con links Jenkins | UI renderiza links |
-| Render visual | `public/app.js` | `renderRun()`, `renderJobStatus()`, `renderApis()`, `renderReportLinks()` | N/A | `lastRun`, `lastReports` | DOM actualizado | Botones actualizados por `setRunningUi()` |
-| Stop | `public/app.js` | `stopButton.addEventListener('click', ...)` | `POST /api/:module/runs/:runId/stop` | `currentModule`, `currentRunId` | `{ ok, data: updatedRun }` | `STOPPING` |
-| Stop backend | `server.js` | Handler inline `app.post('/api/:module/runs/:runId/stop', ...)` | `POST /api/:module/runs/:runId/stop` | `req.params.module`, `req.params.runId` | JSON ok/error | `STOPPING` o error |
-| Detener Jenkins | `server.js` | `stopRunInJenkins()` | Jenkins `/stop` o `/queue/cancelItem` | `buildNumber` o `queueId` | Jenkins acepta stop/cancel | Luego `STOPPED` si Jenkins queda `ABORTED/STOPPED` |
+| Generar runId | `server.js` | `createRunId(moduleId)` | Interno | `moduleId` | `module-timestamp-uuid` | Run identificable por `runId` |
+| Disparar Jenkins | `server.js` | `triggerJenkinsRun(moduleConfig, run)` | `POST {JENKINS_BASE_URL}/job/{jobName}/buildWithParameters` | `URLSearchParams` con parametros Jenkins | Header `location` de queue | Backend obtiene `queueId` |
+| Actualizar queue | `server.js`, `src/runStore.js` | `runStore.update(run.module, run.id, { queueId })` | Interno | `queueId` | Run actualizado | Sigue `QUEUED` |
+| Esperar buildNumber | `server.js` | `monitorRun()` -> `waitForBuildNumber()` | `GET /queue/item/{queueId}/api/json` | `queueId` | `buildNumber`, `buildUrl` | `RUNNING` cuando Jenkins asigna build |
+| Ejecutar pipeline | `jenkins/Jenkinsfile.modular` | stages del pipeline | N/A | Parametros del job | Ejecuta `runners/modular.js` | Jenkins build en progreso |
+| Ejecutar Newman | `runners/modular.js` | `run()` -> `newman.run(...)` | N/A | CLI args y archivos Postman | Reportes JSON/HTML/progreso | `RUNNING`, luego `SUCCESS` o `FAILURE` |
+| Publicar progreso live | `jenkins/Jenkinsfile.modular` | `publish_live_progress()` | `POST /api/:module/runs/:runId/progress` | Payload `filtered` desde `reports/live-progress.json` | Backend responde `202` | Backend actualiza RunStore |
+| Mapear progreso | `src/progressMapper.js` | `mapProgressToRun(progress, run)` | `POST /api/:module/runs/:runId/progress` | JSON de progreso | Patch para run | Status desde `progress.execution.status` |
+| Polling de status | `public/app.js` | `refreshRun()` | `GET /api/:module/runs/:runId/status` | `currentModule`, `currentRunId` | `{ ok, data: run }` | UI refleja estado actual |
+| Polling de progress | `public/app.js` | `refreshRun()` | `GET /api/:module/runs/:runId/progress` | `currentModule`, `currentRunId` | Summary, APIs y steps | UI renderiza APIs visibles |
+| Carga final full | `public/app.js`, `server.js` | `refreshRun()` + artifact sync | `GET /api/:module/runs/:runId/progress?detail=full` | Run final con `buildNumber` | Detalle completo desde artifact Jenkins | UI reemplaza detalle filtrado |
+| Polling de reports | `public/app.js` | `refreshRun()` | `GET /api/:module/runs/:runId/reports` | `currentModule`, `currentRunId` | `reports` con links Jenkins/Newman | UI renderiza links |
+| Render visual | `public/app.js` | `renderRun()`, `renderApis()`, `renderReportLinks()` | N/A | `lastRun`, `lastReports` | DOM actualizado | Botones actualizados |
+| Stop | `public/app.js` | `stopButton.addEventListener('click')` | `POST /api/:module/runs/:runId/stop` | `currentModule`, `currentRunId` | `{ ok, data: updatedRun }` | `STOPPING` |
+| Detener Jenkins | `server.js` | `stopRunInJenkins()` | Jenkins `/stop` o `/queue/cancelItem` | `buildNumber` o `queueId` | Jenkins acepta stop/cancel | Luego `STOPPED` si Jenkins aborta |
 
 ## E. Puntos criticos a validar
 
 ### Variables de entorno necesarias
-
-Confirmadas en `.env.example`, `server.js` y `src/modules.js`:
 
 ```env
 PORT=3000
@@ -183,161 +199,97 @@ JENKINS_BASE_URL=http://localhost:8080
 JENKINS_USER=admin
 JENKINS_API_TOKEN=REEMPLAZAR_CON_API_TOKEN_REAL
 JENKINS_POLL_INTERVAL_MS=1500
-JENKINS_DASHBOARD_BASE_URL=http://<IP_DE_TU_HOST>:3000
-PLY_JOB_NAME=PLY
-USR_JOB_NAME=USR
-CMS_JOB_NAME=CMS
-GPS_JOB_NAME=GPS
+JSON_BODY_LIMIT=75mb
+JENKINS_DASHBOARD_BASE_URL=http://host.docker.internal:3000
+REGRESIVOS_JOB_NAME=REGRESIVOS-MODULAR
 POSTMAN_COLLECTION_FILE=collections/REGRESIVOS.postman_collection.json
 POSTMAN_ENVIRONMENT_FILE=environments/PRE-UAT-PROD-CLAROVIDEO.postman_environment.json
 RUN_STORE_LIMIT_PER_MODULE=50
 ```
 
-`validateRequiredEnv()` en `server.js` exige: `JENKINS_BASE_URL`, `JENKINS_USER`, `JENKINS_API_TOKEN`.
+`validateRequiredEnv()` en `server.js` exige `JENKINS_BASE_URL`, `JENKINS_USER` y `JENKINS_API_TOKEN`.
+
+### Modulos y flows activos
+
+Los modulos vigentes estan definidos en `src/modules.js`.
+
+```text
+ply:
+  - Getmedia
+  - Assets
+  - Tracking - Bookmark
+
+usr:
+  - Perfiles
+  - Favorited
+  - ControlPin
+  - Reminder
+```
+
+Ambos modulos usan el mismo job Jenkins parametrizado y la misma coleccion Postman compartida.
 
 ### dashboardBaseUrl y publicacion de live progress
 
-Confirmado en `server.js`, `jenkins/Jenkinsfile.ply` y `.env.example`.
-
-`dashboardBaseUrl` es la URL base del backend vista desde Jenkins. Jenkins la usa para publicar progreso en vivo hacia el backend con este endpoint:
+`dashboardBaseUrl` es la URL base del backend vista desde Jenkins. Jenkins la usa para publicar progreso en vivo hacia el backend:
 
 ```http
-POST /api/ply/runs/{runId}/progress
+POST /api/:module/runs/:runId/progress
 ```
 
-En `jenkins/Jenkinsfile.ply`, la URL final se arma asi:
-
-```text
-${DASHBOARD_BASE_URL%/}/api/ply/runs/${PLY_RUN_ID}/progress
-```
-
-Por eso este valor no debe pensarse como "la URL que abre el usuario en el navegador", sino como "la URL que Jenkins puede alcanzar para hablar con el backend".
-
-#### Orden real de resolucion
-
-El orden confirmado por codigo es:
-
-1. `params.dashboardBaseUrl`, si llega en el body de `POST /api/:module/runs`.
-2. `process.env.JENKINS_DASHBOARD_BASE_URL`, si existe en `.env`.
-3. `getDashboardBaseUrlForJenkins(PORT)`, si no existe la variable de entorno.
-4. Fallback del `Jenkinsfile.ply` a `http://host.docker.internal:3000` si el parametro Jenkins `dashboardBaseUrl` llega vacio.
-
-En `server.js`:
-
-```js
-const JENKINS_DASHBOARD_BASE_URL = process.env.JENKINS_DASHBOARD_BASE_URL || getDashboardBaseUrlForJenkins(PORT);
-```
-
-En `buildRunConfig()`:
-
-```js
-dashboardBaseUrl: params.dashboardBaseUrl || JENKINS_DASHBOARD_BASE_URL
-```
-
-En `triggerJenkinsRun()`:
-
-```js
-form.append('dashboardBaseUrl', config.dashboardBaseUrl);
-```
-
-#### Lo que no ocurre actualmente
-
-Confirmado por busqueda en `public`, `server.js` y `jenkins/Jenkinsfile.ply`:
-
-- El frontend no calcula `dashboardBaseUrl` con `window.location`.
-- `public/app.js` no envia `dashboardBaseUrl` en el body actual.
-- El backend es quien decide el valor que se envia a Jenkins.
-- `host.docker.internal` no es siempre el valor usado por backend; solo aparece como default del parametro en `Jenkinsfile.ply` y como fallback automatico si `getDashboardBaseUrlForJenkins(PORT)` no encuentra una IP privada.
-
-#### Calculo automatico del backend
-
-`getDashboardBaseUrlForJenkins(port)` usa `os.networkInterfaces()` y busca direcciones IPv4 no internas.
-
-La funcion intenta:
-
-1. Ignorar interfaces cuyo nombre parezca `wsl`, `docker`, `virtual`, `hyper-v` o `vethernet`.
-2. Elegir una IP privada de red local:
-   - `192.168.x.x`
-   - `10.x.x.x`
-   - `172.16.x.x` a `172.31.x.x`
-3. Si no encuentra una interfaz preferida, toma cualquier IP privada disponible.
-4. Si no encuentra ninguna IP privada, devuelve:
-
-```text
-http://host.docker.internal:{PORT}
-```
-
-Ejemplo con `PORT=3000`:
-
-```text
-http://192.168.1.25:3000
-```
-
-o, si no detecta IP privada:
+El valor recomendado para Jenkins local en Docker sobre Windows es:
 
 ```text
 http://host.docker.internal:3000
 ```
 
-#### Valor recomendado segun ambiente
-
-| Ambiente | Valor recomendado para `JENKINS_DASHBOARD_BASE_URL` | Motivo |
-|---|---|---|
-| Jenkins local en Docker | `http://host.docker.internal:3000` si Jenkins corre en Docker Desktop y resuelve ese host. Si no resuelve, usar `http://<IP_PRIVADA_DEL_HOST>:3000`. | Jenkins esta dentro de un contenedor y `localhost:3000` apuntaria al contenedor, no al backend del host. |
-| Jenkins en servidor externo | `http://<HOST_O_IP_DEL_BACKEND>:3000` o la URL HTTPS corporativa si existe proxy. | Jenkins debe alcanzar el backend por red. No usar `localhost` ni `host.docker.internal` salvo que tambien apliquen en ese servidor. |
-| Backend desplegado en servidor interno | `http://<DNS_INTERNO_O_IP_INTERNA>:3000` o la URL publicada por balanceador/proxy interno. | Es el escenario mas estable: Jenkins debe llamar una direccion fija del backend, no una IP dinamica de una laptop. |
-
-#### Validacion obligatoria
-
-Antes de dar por operativo el live progress, validar desde el mismo lugar donde corre Jenkins, contenedor o agente:
+Validar conectividad desde el mismo agente donde corre Jenkins:
 
 ```bash
-curl -i http://<dashboardBaseUrl>/api/modules
+curl -i http://host.docker.internal:3000/api/modules
 ```
 
-La respuesta esperada debe ser HTTP `200` con JSON. Si esta prueba falla, Jenkins no podra publicar progreso en vivo aunque el job ejecute Newman correctamente.
-
-Para un run real, Jenkins publica a una URL de esta forma:
-
-```text
-http://<dashboardBaseUrl>/api/ply/runs/<runId>/progress
-```
-
-Si el dashboard solo muestra datos al final o no actualiza progreso, uno de los primeros puntos a revisar es que `dashboardBaseUrl` sea alcanzable desde Jenkins y que no este apuntando a `localhost` incorrectamente.
+La respuesta esperada es HTTP `200` con JSON.
 
 ### Nombre del job Jenkins
 
-Confirmado en `src/modules.js`:
+El job activo se resuelve desde `REGRESIVOS_JOB_NAME` y por defecto es:
 
-- Para `ply`, `jobName` se resuelve con `env('PLY_JOB_NAME', 'PLY')`.
-- En `.env.example`, `PLY_JOB_NAME=PLY`.
+```text
+REGRESIVOS-MODULAR
+```
 
-Pendiente de confirmar fuera del codigo: que el job exista en Jenkins con nombre real `PLY` y que en la UI de Jenkins apunte a `jenkins/Jenkinsfile.ply`.
+En Jenkins debe existir un unico Pipeline job apuntando a:
+
+```text
+jenkins/Jenkinsfile.modular
+```
 
 ### Parametros del job Jenkins
 
-Confirmados en `jenkins/Jenkinsfile.ply`:
+El backend envia estos parametros al job:
 
-- `module`
-- `runId`
-- `collectionFile`
-- `environmentFile`
-- `flow`
-- `folderName`
-- `environment`
-- `platform`
-- `serviceType`
-- `device`
-- `region`
-- `endpointType`
-- `userFlow`
-- `dashboardBaseUrl`
+```text
+module
+runId
+collectionFile
+environmentFile
+flow
+folderName
+environment
+platform
+serviceType
+device
+region
+endpointType
+userFlow
+dashboardBaseUrl
+liveProgressMode
+liveProgressTimeoutMs
+```
 
-El backend los envia en `triggerJenkinsRun()` usando `URLSearchParams`.
+`folderName` debe coincidir con el folder Newman dentro de la coleccion.
 
 ### Rutas del backend
-
-Confirmadas en `server.js`:
 
 ```http
 GET  /
@@ -355,58 +307,90 @@ POST /api/:module/runs/:runId/stop
 
 ### Estados activos y finales
 
-Confirmados en codigo:
+Estados finales:
 
-- `src/runStore.js` define `FINAL_STATUSES = SUCCESS, FAILURE, ABORTED, STOPPED, CLEARED, UNKNOWN`.
-- `public/app.js` define `FINAL_STATUSES = SUCCESS, FAILURE, STOPPED, ABORTED, CLEARED, UNKNOWN`.
-- `RUNNING`, `QUEUED`, `BUILDING` son tratados visualmente como activos en `statusToPillClass()`.
-- `STOPPING` se usa en `server.js` y `public/app.js`, pero no esta incluido en `FINAL_STATUSES`; por tanto se considera activo hasta que Jenkins finalice/aborte.
+```text
+SUCCESS
+FAILURE
+ABORTED
+STOPPED
+CLEARED
+UNKNOWN
+```
+
+Estados activos comunes:
+
+```text
+QUEUED
+RUNNING
+BUILDING
+STOPPING
+```
+
+`STOPPING` se mantiene activo hasta que Jenkins confirme el cierre del build o de la cola.
+
+### Progreso live y detalle final
+
+Durante `RUNNING`, Jenkins publica payload liviano en modo:
+
+```text
+LIVE_PROGRESS_MODE=filtered
+```
+
+El payload live conserva la URL completa de cada API y filtra headers sensibles. No envia response body completo en cada publicacion.
+
+Cuando el run queda en `SUCCESS` o `FAILURE`, el frontend solicita:
+
+```http
+GET /api/:module/runs/:runId/progress?detail=full
+```
+
+El backend lee el artifact final `reports/live-progress.json` de Jenkins y expande el detalle completo de cada API.
+
+### Reportes Newman
+
+Artifacts generados:
+
+```text
+reports/live-progress.json
+reports/newman-result.json
+reports/newman-report.html
+```
+
+Jenkins los publica como artifacts del build para consulta desde el dashboard.
 
 ### Permisos y dependencias necesarias en Jenkins
 
-Confirmado por codigo:
+El agente Jenkins necesita:
 
-- `jenkins/Jenkinsfile.ply` usa `agent any`.
-- Usa shell `sh`, por lo que el agente Jenkins debe poder ejecutar comandos tipo Unix.
-- Necesita `node` y `npm` disponibles para `node runners/ply.js`, `npm ci` o `npm install`.
-- Necesita acceso al repositorio Git configurado en Jenkins (detalle de credencial SCM: pendiente de confirmar en Jenkins UI).
-- Necesita permisos para archivar artifacts: `archiveArtifacts`.
-- El backend necesita credenciales Jenkins API (`JENKINS_USER`, `JENKINS_API_TOKEN`) con permiso para:
-  - disparar `buildWithParameters`
-  - consultar queue item `/queue/item/{id}/api/json`
-  - consultar build `/job/{job}/{build}/api/json`
-  - detener build `/job/{job}/{build}/stop`
-  - cancelar cola `/queue/cancelItem?id={queueId}`
+- `node` y `npm` disponibles.
+- Acceso al repositorio Git.
+- Permiso para archivar artifacts.
+- Acceso de red al backend usando `dashboardBaseUrl`.
+
+El backend necesita credenciales Jenkins API con permisos para:
+
+- disparar `buildWithParameters`;
+- consultar queue item;
+- consultar build;
+- detener build;
+- cancelar item en cola.
 
 ### Limitacion de memoria temporal
 
-Confirmado en `src/runStore.js`:
-
-- `RunStore` usa `this.runsByModule = new Map()` en memoria RAM.
-- La estructura conceptual es:
-
-```text
-runsByModule
-  -> 'ply'
-     -> [run1, run2, run3]
-  -> 'usr'
-     -> []
-```
-
-- `RUN_STORE_LIMIT_PER_MODULE` controla el limite usado al crear `new RunStore({ limitPerModule: Number(process.env.RUN_STORE_LIMIT_PER_MODULE || 50) })`.
-- Si no se configura, el default es `50`.
-- `prune(moduleId)` conserva los ultimos `limitPerModule` runs, ordenados por `startedAt` descendente.
-- Si se reinicia el backend, se pierde todo el historial en memoria.
-
-## RunStore / memoria temporal en detalle
-
-`RunStore` esta definido en `src/runStore.js`. No usa base de datos ni archivos para persistir runs. Usa un `Map` en RAM:
+`RunStore` usa un `Map` en RAM:
 
 ```js
 this.runsByModule = new Map();
 ```
 
-Cada run creado por `create(input)` guarda, segun el codigo:
+Cada modulo conserva hasta `RUN_STORE_LIMIT_PER_MODULE` runs. Si se reinicia el backend, se pierde el historial local.
+
+## RunStore / memoria temporal en detalle
+
+`RunStore` esta definido en `src/runStore.js`. No usa base de datos ni archivos para persistir runs.
+
+Cada run guarda:
 
 ```js
 {
@@ -435,14 +419,14 @@ Cada run creado por `create(input)` guarda, segun el codigo:
 }
 ```
 
-Metodos confirmados:
+Metodos principales:
 
-- `create(input)`: crea el run, genera `crypto.randomUUID()` si no llega `input.id`, lo guarda por modulo y ejecuta `prune(moduleId)`.
+- `create(input)`: crea el run, lo guarda por modulo y ejecuta `prune(moduleId)`.
 - `list(moduleId)`: devuelve runs del modulo ordenados por `startedAt` descendente.
 - `get(moduleId, runId)`: devuelve un run especifico o `null`.
 - `update(moduleId, runId, updater)`: mezcla un patch sobre el run y actualiza `updatedAt`.
-- `findLatest(moduleId)`: devuelve el primer item de `list(moduleId)`.
-- `findLatestActive(moduleId)`: devuelve el run mas reciente cuyo status no este en `FINAL_STATUSES`.
+- `findLatest(moduleId)`: devuelve el run mas reciente.
+- `findLatestActive(moduleId)`: devuelve el run activo mas reciente.
 - `findByBuildNumber(moduleId, buildNumber)`: busca por `buildNumber`.
 - `clearModule(moduleId)`: vacia los runs de un modulo.
 - `prune(moduleId)`: recorta la lista a `limitPerModule`.
@@ -455,79 +439,49 @@ Cuando el frontend llama:
 GET /api/:module/runs/:runId/status
 ```
 
-pasa esto en `server.js`:
+ocurre este flujo:
 
-1. El handler inline de `app.get('/api/:module/runs/:runId/status', ...)` recibe `req.params.module` y `req.params.runId`.
-2. Llama `getRunOr404(req.params.module, req.params.runId, res)`.
-3. `getRunOr404()` llama `getModuleOr404()` y despues `runStore.get(moduleConfig.id, runId)`.
-4. Si existe el run, llama `refreshRunFromJenkins(run)`.
-5. `refreshRunFromJenkins()` consulta Jenkins con `getBuildInfo(run)` si el run tiene `buildNumber` y no esta en estado final.
-6. Usa `normalizeStatus()` y `getRunStatusFromJenkins()` para decidir el status actual.
-7. Actualiza RunStore con `runStore.update(run.module, run.id, patch)`.
-8. Responde con el objeto `run` actualizado:
-
-```json
-{
-  "ok": true,
-  "data": { "...": "run actualizado desde RunStore" }
-}
-```
-
-En el frontend, `refreshRun()` lee `statusData.data`, lo combina con `progressData.data` en `mergeRunProgress()`, ejecuta `renderRun(lastRun)` y ajusta botones con `setRunningUi()`.
+1. El handler de `server.js` recibe `module` y `runId`.
+2. `getRunOr404()` valida modulo y busca el run en `RunStore`.
+3. Si el run existe, `refreshRunFromJenkins(run)` consulta Jenkins cuando corresponde.
+4. El backend normaliza el estado con `normalizeStatus()` y `getRunStatusFromJenkins()`.
+5. `RunStore` se actualiza con estado, reportes, timestamps y links.
+6. El backend responde `{ ok: true, data: run }`.
+7. El frontend combina status y progress en `mergeRunProgress()`.
+8. `renderRun()` actualiza la UI.
 
 ## Stop / cancelacion
 
 Cuando el usuario pulsa Stop:
 
-1. En `public/live-viewer.html`, el boton es `button id="stopButton"`.
-2. En `public/app.js`, se ejecuta `stopButton.addEventListener('click', async () => { ... })`.
-3. Valida que existan `currentModule`, `currentRunId`, `lastRun` y que el status no sea final con `isFinal(lastRun.status)`.
-4. Muestra `confirm('Deseas detener la ejecucion actual en Jenkins?')`.
-5. Cambia UI a `STOPPING`:
-
-```js
-stoppingRunId = currentRunId;
-setRunningUi(true, 'STOPPING');
-```
-
-6. Llama:
+1. `public/app.js` valida que exista `currentModule`, `currentRunId` y un run no final.
+2. Cambia la UI a `STOPPING`.
+3. Llama:
 
 ```http
 POST /api/:module/runs/:runId/stop
 ```
 
-7. En backend, el handler inline `app.post('/api/:module/runs/:runId/stop', ...)` busca el run con `getRunOr404()`.
-8. Si el run ya esta en `FINAL_STATUSES`, devuelve 409.
-9. Si no hay `queueId` ni `buildNumber`, devuelve 409.
-10. Llama `stopRunInJenkins(run)`:
-    - si existe `buildNumber`, llama `stopJenkinsBuild(run)` y ejecuta `POST /job/{jobName}/{buildNumber}/stop`.
-    - si no existe `buildNumber` pero existe `queueId`, llama `cancelJenkinsQueue(queueId)` y ejecuta `POST /queue/cancelItem?id={queueId}`.
-11. Actualiza RunStore a:
-
-```js
-{
-  status: 'STOPPING',
-  result: 'STOPPING',
-  cancellationRequested: true,
-  stopRequestedAt: now
-}
-```
-
-12. Devuelve `{ ok: true, message: 'Stop requested in Jenkins.', data: updatedRun }`.
-13. El polling posterior detecta cuando Jenkins queda `ABORTED` o `STOPPED` y `getRunStatusFromJenkins()` lo traduce a `STOPPED` si `cancellationRequested` es verdadero.
+4. El backend busca el run en `RunStore`.
+5. Si el run tiene `buildNumber`, solicita detener el build en Jenkins.
+6. Si el run aun solo tiene `queueId`, cancela el item de cola.
+7. `RunStore` queda con `status: 'STOPPING'` y `cancellationRequested: true`.
+8. El polling posterior refleja el estado final cuando Jenkins termina de abortar o detener.
 
 ## Explicacion para entregar al jefe
 
 El flujo funciona como una cadena coordinada entre pantalla, backend, memoria temporal y Jenkins.
 
-El frontend es la pantalla que usa el usuario. Desde ahi se selecciona el modulo, por ahora PLY, el flujo, por ejemplo Getmedia, y los parametros de ambiente, region, dispositivo y tipo de endpoint. Cuando el usuario pulsa Run, la pantalla no ejecuta Newman directamente. Lo que hace es enviar una solicitud al backend para crear una nueva ejecucion.
+El frontend permite seleccionar modulo, flujo y parametros de ejecucion. Cuando el usuario pulsa Run, la pantalla no ejecuta Newman directamente. Envia una solicitud al backend para crear una nueva ejecucion.
 
-El backend recibe esa solicitud, valida que el modulo exista y que los parametros obligatorios esten completos. Luego traduce el flujo seleccionado a un folder Newman dentro de la coleccion Postman compartida. Despues crea un registro temporal llamado run. Ese run recibe un identificador unico llamado `runId`, y queda guardado en memoria RAM dentro de `RunStore`.
+El backend valida el modulo, resuelve el flujo al folder Newman correspondiente y crea un run temporal en memoria. Ese run recibe un `runId` unico y queda guardado en `RunStore`.
 
-Con el run creado, el backend llama a Jenkins y dispara el job correspondiente. Para PLY, el job configurado es `PLY`. Jenkins hace checkout del proyecto, prepara dependencias, ejecuta `runners/ply.js` y ese runner usa Newman para correr la coleccion Postman con el folder correspondiente. Durante y despues de la ejecucion se generan reportes: progreso en vivo, JSON de Newman y HTML de Newman.
+Con el run creado, el backend dispara el job Jenkins unico `REGRESIVOS-MODULAR`. Jenkins hace checkout del proyecto, prepara el workspace, ejecuta `runners/modular.js` y ese runner usa Newman para correr la coleccion Postman con el folder recibido por parametro.
 
-Mientras Jenkins esta trabajando, el frontend consulta periodicamente al backend usando el `runId`. Esa consulta ocurre cada 1500 milisegundos. El backend revisa el estado guardado en `RunStore` y, cuando corresponde, consulta Jenkins para saber si el build sigue corriendo o ya termino. Con esa informacion, el frontend actualiza la pantalla: estado, contadores, APIs visibles y links de reportes.
+Mientras Jenkins ejecuta Newman, publica progreso liviano al backend. El dashboard consulta periodicamente el backend usando el `runId` y actualiza estado, contadores, APIs visibles y links de reportes.
 
-`RunStore` es la memoria temporal del backend. Sirve para recordar que ejecuciones estan en cola, corriendo o terminadas, y para relacionar el `runId` de la pantalla con el `queueId`, `buildNumber` y `buildUrl` de Jenkins. No es una base de datos. Si se reinicia el backend, esa memoria se pierde y los runs anteriores dejan de estar disponibles en la API local.
+Al finalizar, el dashboard pide una carga final completa. El backend toma el artifact final de Jenkins y reemplaza el detalle liviano por el detalle completo de la ejecucion.
 
-Si el usuario pulsa Stop, el frontend llama un endpoint de cancelacion del backend. El backend mira si el run todavia esta en cola o si ya tiene build en Jenkins. Si esta en cola, cancela el item de Jenkins. Si ya esta corriendo, solicita detener el build. Como Newman corre dentro del job de Jenkins, detener el build es lo que corta el proceso del runner.
+`RunStore` es memoria temporal. Relaciona el `runId` de pantalla con el `queueId`, `buildNumber` y `buildUrl` de Jenkins, pero no persiste informacion si el backend se reinicia.
+
+Si el usuario pulsa Stop, el backend decide si debe cancelar un item de cola o detener un build en Jenkins. Como Newman corre dentro del job Jenkins, detener el build corta la ejecucion del runner.

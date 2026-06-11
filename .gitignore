@@ -6,5 +6,7 @@ npm-debug.log*
 reports/*
 !reports/.gitkeep
 
+legacy/
+
 .npm-cache/
 .DS_Store
