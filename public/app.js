@@ -10,6 +10,7 @@ let lastRun = null;
 let lastReports = null;
 let stoppingRunId = null;
 let finalSettlePolls = 0;
+let finalFullLoaded = false;
 
 const form = document.getElementById('runForm');
 const moduleSelect = document.getElementById('moduleSelect');
@@ -33,6 +34,7 @@ form.addEventListener('submit', async event => {
   selectedApiId = null;
   currentModule = moduleId;
   finalSettlePolls = 0;
+  finalFullLoaded = false;
 
   setRunningUi(true, 'QUEUED');
   clearDashboardView('Run enviado a Jenkins. Esperando progreso...');
@@ -71,6 +73,7 @@ moduleSelect.addEventListener('change', async () => {
   currentModule = moduleSelect.value;
   currentRunId = null;
   finalSettlePolls = 0;
+  finalFullLoaded = false;
   stopLiveRefresh();
   clearDashboardView();
   await loadFlows(currentModule);
@@ -114,6 +117,7 @@ clearButton.addEventListener('click', () => {
   lastRun = null;
   lastReports = null;
   finalSettlePolls = 0;
+  finalFullLoaded = false;
   clearDashboardView('Resultados limpiados.');
   renderJobStatus(null);
   setRunningUi(false);
@@ -228,6 +232,7 @@ async function refreshLatestRun() {
 
     if (!isFinal(latestRun.status)) {
       finalSettlePolls = 0;
+      finalFullLoaded = false;
       startLiveRefresh();
     }
   } catch (error) {
@@ -239,18 +244,25 @@ async function refreshRun() {
   if (!currentModule || !currentRunId) return;
 
   try {
-    const [statusResponse, progressResponse, reportsResponse] = await Promise.all([
-      fetch(`/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/status?cache=${Date.now()}`),
-      fetch(`/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/progress?cache=${Date.now()}`),
-      fetch(`/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/reports?cache=${Date.now()}`)
+    const statusEndpoint = `/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/status?cache=${Date.now()}`;
+    const statusResponse = await fetch(statusEndpoint);
+    const statusData = await statusResponse.json();
+
+    const finalStatus = isFinal(statusData.data?.status || statusData.data?.result);
+    const progressDetail = finalStatus ? 'full' : 'live';
+    const progressEndpoint = `/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/progress${finalStatus ? '?detail=full&' : '?'}cache=${Date.now()}`;
+    const reportsEndpoint = `/api/${encodeURIComponent(currentModule)}/runs/${encodeURIComponent(currentRunId)}/reports?cache=${Date.now()}`;
+
+    const [progressResponse, reportsResponse] = await Promise.all([
+      fetch(progressEndpoint),
+      fetch(reportsEndpoint)
     ]);
 
-    const statusData = await statusResponse.json();
     const progressData = await progressResponse.json();
     const reportsData = await reportsResponse.json();
 
     logLiveResponse('/status', statusData.data);
-    logLiveResponse('/progress', progressData.data);
+    logLiveResponse(finalStatus ? '/progress?detail=full' : '/progress', progressData.data);
     logLiveResponse('/reports', reportsData.data);
 
     if (!statusResponse.ok || !statusData.ok) {
@@ -258,6 +270,7 @@ async function refreshRun() {
     }
 
     lastRun = mergeRunProgress(statusData.data, progressData.ok ? progressData.data : null);
+    finalFullLoaded = finalStatus && Boolean(lastRun.reports?.fullProgress || progressData.data?.reports?.fullProgress);
     lastReports = reportsData.ok && reportsMatchRunBuild(reportsData.data, lastRun)
       ? reportsData.data
       : lastRun.reports;
@@ -269,13 +282,15 @@ async function refreshRun() {
       stoppingRunId = null;
       setRunningUi(false, lastRun.status);
 
-      if (hasRenderableProgress(lastRun) || finalSettlePolls >= FINAL_SETTLE_POLLS) {
+      if (finalFullLoaded || finalSettlePolls >= FINAL_SETTLE_POLLS) {
         stopLiveRefresh();
       } else {
+        console.log(`[LIVE-UI] waiting final full progress detail=${progressDetail} settlePoll=${finalSettlePolls + 1}/${FINAL_SETTLE_POLLS}`);
         finalSettlePolls++;
       }
     } else {
       finalSettlePolls = 0;
+      finalFullLoaded = false;
       setRunningUi(true, lastRun.status);
     }
   } catch (error) {
@@ -310,6 +325,8 @@ function mergeRunProgress(run, progress) {
   return {
     ...run,
     status: progress.status || run.status,
+    result: progress.result || run.result,
+    buildNumber: progress.buildNumber || run.buildNumber,
     summary: mergedSummary,
     apiExecutions: mergedApis,
     apis: mergedApis,
@@ -320,7 +337,11 @@ function mergeRunProgress(run, progress) {
       ? (progress.qaConsole || run.qaConsole)
       : run.qaConsole,
     startedAt: progress.startedAt || run.startedAt,
-    finishedAt: progress.finishedAt || run.finishedAt
+    finishedAt: progress.finishedAt || run.finishedAt,
+    reports: {
+      ...(run.reports || {}),
+      ...(progress.reports || {})
+    }
   };
 }
 

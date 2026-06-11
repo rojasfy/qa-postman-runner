@@ -156,24 +156,23 @@ pipeline {
                               '
                             }
 
-                            dashboard_candidates() {
-                              primary="${DASHBOARD_BASE_URL%/}"
-                              echo "$primary"
-                              echo "http://host.docker.internal:3000"
-                              echo "http://gateway.docker.internal:3000"
-
-                              if command -v ip >/dev/null 2>&1; then
-                                gateway="$(ip route 2>/dev/null | awk '/default/ {print $3; exit}')"
-                                if [ -n "$gateway" ]; then
-                                  echo "http://${gateway}:3000"
-                                fi
-                              fi
-                            }
-
                             resolve_dashboard_base_url() {
-                              seen=""
+                              if [ -n "${DASHBOARD_BASE_URL:-}" ]; then
+                                DASHBOARD_BASE_URL="${DASHBOARD_BASE_URL%/}"
+                                export DASHBOARD_BASE_URL
 
-                              for candidate in $(dashboard_candidates); do
+                                if probe_dashboard_url "$DASHBOARD_BASE_URL"; then
+                                  echo "[LIVE-PROGRESS] Dashboard reachable at ${DASHBOARD_BASE_URL}"
+                                  return 0
+                                fi
+
+                                echo "[LIVE-PROGRESS] WARN dashboard not reachable at ${DASHBOARD_BASE_URL}"
+                                echo "[LIVE-PROGRESS] WARN live updates will rely on artifact sync"
+                                return 0
+                              fi
+
+                              seen=""
+                              for candidate in http://host.docker.internal:3000 http://gateway.docker.internal:3000 http://172.17.0.1:3000; do
                                 if [ -z "$candidate" ]; then
                                   continue
                                 fi
@@ -200,11 +199,6 @@ pipeline {
 
                             publish_live_progress() {
                               if [ -z "${DASHBOARD_BASE_URL:-}" ] || [ -z "${MODULE_ID:-}" ] || [ -z "${RUN_ID:-}" ] || [ ! -f reports/live-progress.json ]; then
-                                return 0
-                              fi
-
-                              if ! probe_dashboard_url "$DASHBOARD_BASE_URL"; then
-                                echo "[LIVE-PROGRESS] WARN skipping publish; dashboard not reachable at ${DASHBOARD_BASE_URL}"
                                 return 0
                               fi
 

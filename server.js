@@ -130,7 +130,10 @@ app.get('/api/:module/runs/:runId/progress', async (req, res) => {
   let run = getRunOr404(req.params.module, req.params.runId, res);
   if (!run) return;
 
-  if (run.buildNumber && FINAL_STATUSES.has(String(run.status || '').toUpperCase()) && !run.apiExecutions?.length) {
+  const wantsFullDetail = String(req.query.detail || '').toLowerCase() === 'full';
+  const isFinalRun = FINAL_STATUSES.has(String(run.status || '').toUpperCase());
+
+  if (run.buildNumber && isFinalRun && (wantsFullDetail || !run.apiExecutions?.length || !run.reports?.fullProgress)) {
     const artifactPatch = await getLiveProgressPatchFromJenkinsArtifact(run);
 
     if (artifactPatch) {
@@ -153,12 +156,16 @@ app.get('/api/:module/runs/:runId/progress', async (req, res) => {
       flow: run.flow,
       newmanFolder: run.newmanFolder,
       status: run.status,
+      result: run.result,
+      buildNumber: run.buildNumber,
       summary: run.summary,
       apiExecutions: run.apiExecutions,
+      apis: run.apiExecutions,
       executionSteps: run.executionSteps,
       qaConsole: run.qaConsole,
       startedAt: run.startedAt,
-      finishedAt: run.finishedAt
+      finishedAt: run.finishedAt,
+      reports: run.reports
     }
   });
 });
@@ -195,10 +202,18 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
     try {
       const latestRun = runStore.get(run.module, run.id) || run;
       const incomingBuildNumber = progress.execution?.buildNumber || null;
+      const incomingStatus = normalizeStatus(progress.execution?.status || 'RUNNING');
 
       if (isDifferentBuildNumber(latestRun.buildNumber, incomingBuildNumber)) {
         console.warn(
           `[LIVE-PROGRESS] ignored progress ${latestRun.module}/${latestRun.id} incomingBuild=${incomingBuildNumber} currentBuild=${latestRun.buildNumber}`
+        );
+        return;
+      }
+
+      if (FINAL_STATUSES.has(String(latestRun.status || '').toUpperCase()) && !FINAL_STATUSES.has(incomingStatus)) {
+        console.warn(
+          `[LIVE-PROGRESS] ignored non-final progress for completed run ${latestRun.module}/${latestRun.id} incomingStatus=${incomingStatus} currentStatus=${latestRun.status}`
         );
         return;
       }
@@ -213,6 +228,8 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
         reports: {
           ...latestRun.reports,
           ...patch.reports,
+          progressDetail: 'filtered',
+          fullProgress: false,
           links: buildReportLinks({ ...latestRun, ...patch, buildNumber })
         }
       });
@@ -671,7 +688,9 @@ async function getLiveProgressPatchFromJenkinsArtifact(run) {
       reports: {
         ...run.reports,
         ...patch.reports,
-        liveProgress: true
+        liveProgress: true,
+        fullProgress: true,
+        progressDetail: 'full'
       }
     };
 
