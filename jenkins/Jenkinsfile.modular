@@ -23,8 +23,8 @@ pipeline {
 
         string(name: 'userFlow', defaultValue: '', description: 'Optional user flow metadata.')
         string(name: 'dashboardBaseUrl', defaultValue: 'http://host.docker.internal:3000', description: 'Backend API URL used by Jenkins to publish live progress.')
-        choice(name: 'liveProgressMode', choices: ['filtered', 'truncated', 'full'], description: 'Payload published during the live loop: full=A, filtered=B, truncated=C.')
-        string(name: 'liveProgressTimeoutMs', defaultValue: '10000', description: 'Timeout for each live progress publish attempt.')
+        choice(name: 'liveProgressMode', choices: ['filtered', 'full'], description: 'Payload published during the live loop. Use filtered by default; full is only for manual debugging.')
+        string(name: 'liveProgressTimeoutMs', defaultValue: '3000', description: 'Timeout for each live progress publish attempt.')
     }
 
     environment {
@@ -116,7 +116,7 @@ pipeline {
                         "RUN_USER_FLOW=${params.userFlow ?: ''}",
                         "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
                         "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
-                        "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '10000'}"
+                        "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '3000'}"
                     ]) {
                         sh '''
                             set -eu
@@ -207,22 +207,21 @@ pipeline {
 
                               DASHBOARD_LIVE_PROGRESS_URL="$DASHBOARD_LIVE_PROGRESS_URL" \
                               LIVE_PROGRESS_FILE="reports/live-progress.json" \
-                              LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-10000}" \
+                              LIVE_PROGRESS_TIMEOUT_MS="${LIVE_PROGRESS_TIMEOUT_MS:-3000}" \
                               node -e '
                                 const fs = require("fs");
                                 const http = require("http");
                                 const https = require("https");
                                 const target = process.env.DASHBOARD_LIVE_PROGRESS_URL;
                                 const file = process.env.LIVE_PROGRESS_FILE;
-                                const timeoutMs = Number(process.env.LIVE_PROGRESS_TIMEOUT_MS || 10000);
+                                const timeoutMs = Number(process.env.LIVE_PROGRESS_TIMEOUT_MS || 3000);
 
                                 if (!target || !fs.existsSync(file)) process.exit(0);
 
                                 const raw = fs.readFileSync(file, "utf8");
                                 const progress = JSON.parse(raw);
                                 const mode = String(process.env.LIVE_PROGRESS_MODE || "filtered").toLowerCase();
-                                const bodyLimit = Number(process.env.LIVE_PROGRESS_BODY_LIMIT_BYTES || 5120);
-                                const headerWhitelist = new Set(["partition", "true-client-ip", "authorization", "token", "user-token"]);
+                                const headerWhitelist = new Set(["partition", "true-client-ip", "authorization", "token", "user-token", "access-token"]);
                                 const methodsWithBody = new Set(["POST", "PUT", "PATCH"]);
                                 const normalizeStatus = value => {
                                   const status = String(value || "UNKNOWN").toUpperCase();
@@ -231,10 +230,14 @@ pipeline {
                                   return status;
                                 };
                                 const bytesOf = value => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value ?? null), "utf8");
+                                const fullUrlOf = value => {
+                                  const rawUrl = String(value || "");
+                                  return rawUrl || null;
+                                };
                                 const pathOf = value => {
                                   const rawUrl = String(value || "");
                                   if (!rawUrl) return null;
-                                  try { return new URL(rawUrl).pathname.slice(0, 220); } catch (_) { return rawUrl.split("?")[0].slice(0, 220); }
+                                  try { return new URL(rawUrl).pathname; } catch (_) { return rawUrl.split("?")[0]; }
                                 };
                                 const mask = value => {
                                   const text = String(value || "");
@@ -247,6 +250,7 @@ pipeline {
                                   const text = String(value || "");
                                   return normalizedKey.includes("authorization")
                                     || normalizedKey.includes("token")
+                                    || normalizedKey.includes("access-token")
                                     || /^Bearer\\s+\\S+/i.test(text)
                                     || /^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$/.test(text);
                                 };
@@ -261,25 +265,19 @@ pipeline {
                                   const request = { headers: headersOf(api.request && api.request.headers) };
                                   if (!methodsWithBody.has(method) || !api.request || api.request.body === undefined || api.request.body === null) return request;
                                   const originalBodySize = bytesOf(api.request.body);
-                                  if (mode === "truncated" && originalBodySize > bodyLimit) {
-                                    return {
-                                      ...request,
-                                      body: Buffer.from(typeof api.request.body === "string" ? api.request.body : JSON.stringify(api.request.body), "utf8").subarray(0, bodyLimit).toString("utf8"),
-                                      bodyTruncated: true,
-                                      originalBodySize
-                                    };
-                                  }
                                   return { ...request, body: api.request.body, bodyTruncated: false, originalBodySize };
                                 };
                                 const rawApis = Array.isArray(progress.apis) ? progress.apis : (Array.isArray(progress.apiExecutions) ? progress.apiExecutions : []);
                                 const apis = rawApis.map(api => {
                                   const status = normalizeStatus(api.status);
                                   const assertions = Array.isArray(api.assertions) ? api.assertions : [];
+                                  const fullUrl = fullUrlOf(api.url || api.path);
                                   return {
                                     id: String(api.id || api.itemId || `${api.name || "api"}-${api.executedAt || ""}`),
                                     itemId: api.itemId || null,
-                                    name: api.name || pathOf(api.url || api.path) || "Unnamed API",
+                                    name: api.name || fullUrl || pathOf(api.url || api.path) || "Unnamed API",
                                     method: api.method || null,
+                                    url: fullUrl,
                                     path: pathOf(api.url || api.path),
                                     status,
                                     statusCode: api.statusCode || (api.response && api.response.statusCode) || null,
@@ -337,7 +335,7 @@ pipeline {
                                   response.on("end", () => process.exit(response.statusCode >= 200 && response.statusCode < 300 ? 0 : 1));
                                 });
 
-                                request.on("error", error => { console.error("[LIVE-PROGRESS] " + error.message); process.exit(0); });
+                                request.on("error", error => { console.warn("[LIVE-PROGRESS] WARN publish failed: " + error.message); process.exit(0); });
                                 request.write(body);
                                 request.end();
                                 setTimeout(() => process.exit(0), timeoutMs);
@@ -389,7 +387,7 @@ pipeline {
                     "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
                     "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
                     "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
-                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '10000'}"
+                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '3000'}"
                 ]) {
                     sh '''
                         if [ -f reports/live-progress.json ]; then
@@ -420,7 +418,7 @@ pipeline {
                     "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
                     "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
                     "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
-                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '10000'}"
+                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '3000'}"
                 ]) {
                     sh '''
                         node -e '
@@ -468,7 +466,7 @@ pipeline {
                     "RUN_ID=${params.runId?.trim() ? params.runId.trim() : 'manual-' + env.BUILD_NUMBER}",
                     "DASHBOARD_BASE_URL=${params.dashboardBaseUrl ?: 'http://host.docker.internal:3000'}",
                     "LIVE_PROGRESS_MODE=${params.liveProgressMode ?: 'filtered'}",
-                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '10000'}"
+                    "LIVE_PROGRESS_TIMEOUT_MS=${params.liveProgressTimeoutMs ?: '3000'}"
                 ]) {
                     sh '''
                         if [ -f reports/live-progress.json ]; then
