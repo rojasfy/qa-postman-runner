@@ -249,12 +249,18 @@ async function refreshRun() {
     const progressData = await progressResponse.json();
     const reportsData = await reportsResponse.json();
 
+    logLiveResponse('/status', statusData.data);
+    logLiveResponse('/progress', progressData.data);
+    logLiveResponse('/reports', reportsData.data);
+
     if (!statusResponse.ok || !statusData.ok) {
       throw new Error(statusData.message || 'Could not refresh run status.');
     }
 
     lastRun = mergeRunProgress(statusData.data, progressData.ok ? progressData.data : null);
-    lastReports = reportsData.ok ? reportsData.data : lastRun.reports;
+    lastReports = reportsData.ok && reportsMatchRunBuild(reportsData.data, lastRun)
+      ? reportsData.data
+      : lastRun.reports;
 
     renderRun(lastRun);
     renderReportLinks({ ...lastRun, reports: lastReports });
@@ -280,24 +286,33 @@ async function refreshRun() {
 }
 
 function hasRenderableProgress(run = {}) {
-  return Boolean((run.apiExecutions || []).length || run.summary?.total);
+  return Boolean(getApiExecutions(run).length || run.summary?.total);
 }
 
 function mergeRunProgress(run, progress) {
   if (!progress) return run;
 
-  const runApiCount = (run.apiExecutions || []).length;
-  const progressApiCount = (progress.apiExecutions || []).length;
+  const runApis = getApiExecutions(run);
+  const progressApis = getApiExecutions(progress);
+  const runApiCount = runApis.length;
+  const progressApiCount = progressApis.length;
   const runSummaryTotal = Number(run.summary?.total || 0);
   const progressSummaryTotal = Number(progress.summary?.total || 0);
-  const useProgressApis = progressApiCount >= runApiCount;
-  const useProgressSummary = progressSummaryTotal >= runSummaryTotal;
+  const runStatus = String(run.status || run.result || '').toUpperCase();
+  const progressStatus = String(progress.status || progress.result || '').toUpperCase();
+  const runIsFinal = isFinal(runStatus);
+  const progressHasRunningData = progressStatus === 'RUNNING' && (progressApiCount > 0 || progressSummaryTotal > 0);
+  const useProgressApis = progressApiCount >= runApiCount || (progressHasRunningData && !runIsFinal);
+  const useProgressSummary = progressSummaryTotal >= runSummaryTotal || (progressHasRunningData && !runIsFinal);
+  const mergedApis = useProgressApis ? progressApis : runApis;
+  const mergedSummary = useProgressSummary ? (progress.summary || run.summary) : run.summary;
 
   return {
     ...run,
     status: progress.status || run.status,
-    summary: useProgressSummary ? (progress.summary || run.summary) : run.summary,
-    apiExecutions: useProgressApis ? (progress.apiExecutions || run.apiExecutions) : run.apiExecutions,
+    summary: mergedSummary,
+    apiExecutions: mergedApis,
+    apis: mergedApis,
     executionSteps: (progress.executionSteps || []).length >= (run.executionSteps || []).length
       ? (progress.executionSteps || run.executionSteps)
       : run.executionSteps,
@@ -307,6 +322,43 @@ function mergeRunProgress(run, progress) {
     startedAt: progress.startedAt || run.startedAt,
     finishedAt: progress.finishedAt || run.finishedAt
   };
+}
+
+function getApiExecutions(data = {}) {
+  if (Array.isArray(data.apiExecutions)) return data.apiExecutions;
+  if (Array.isArray(data.apis)) return data.apis;
+  return [];
+}
+
+function getApiSource(data = {}) {
+  if (Array.isArray(data.apiExecutions)) return 'apiExecutions';
+  if (Array.isArray(data.apis)) return 'apis';
+  return 'none';
+}
+
+function logLiveResponse(endpoint, data = {}) {
+  const apiSource = getApiSource(data);
+  const apis = getApiExecutions(data);
+  const status = data?.status || data?.result || '--';
+  const total = Number(data?.summary?.total || 0);
+
+  console.log(
+    `[LIVE-UI] ${endpoint} status=${status} apis=${apis.length} summaryTotal=${total} source=${apiSource}`
+  );
+}
+
+function reportsMatchRunBuild(reports = {}, run = {}) {
+  if (!run?.buildNumber || !reports?.links) return true;
+
+  const buildToken = `/${run.buildNumber}/`;
+  const links = Object.values(reports.links).filter(Boolean);
+  const matches = !links.length || links.every(link => String(link).includes(buildToken));
+
+  if (!matches) {
+    console.warn(`[LIVE-UI] ignored /reports links for inactive build; activeBuild=${run.buildNumber}`);
+  }
+
+  return matches;
 }
 
 function setRunningUi(isRunning, status = null) {
@@ -340,7 +392,7 @@ function renderRun(run) {
   renderExecution(run);
   renderSummary(run.summary || {});
   renderParameters(run.config || {});
-  renderApis(run.apiExecutions || []);
+  renderApis(getApiExecutions(run));
   renderReportLinks(run);
 }
 

@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const axios = require('axios');
 const cors = require('cors');
 
@@ -92,6 +93,7 @@ app.post('/api/:module/runs', async (req, res) => {
 
     ensureModuleOperational(moduleConfig);
 
+    console.log(`[RUN-LIFECYCLE] init POST /api/${moduleConfig.id}/runs`);
     const run = await createRun(moduleConfig, req.body || {});
 
     res.status(202).json({
@@ -192,8 +194,17 @@ app.post('/api/:module/runs/:runId/progress', (req, res) => {
   setImmediate(() => {
     try {
       const latestRun = runStore.get(run.module, run.id) || run;
+      const incomingBuildNumber = progress.execution?.buildNumber || null;
+
+      if (isDifferentBuildNumber(latestRun.buildNumber, incomingBuildNumber)) {
+        console.warn(
+          `[LIVE-PROGRESS] ignored progress ${latestRun.module}/${latestRun.id} incomingBuild=${incomingBuildNumber} currentBuild=${latestRun.buildNumber}`
+        );
+        return;
+      }
+
       const patch = mapProgressToRun(progress, latestRun);
-      const buildNumber = progress.execution?.buildNumber || latestRun.buildNumber;
+      const buildNumber = incomingBuildNumber || latestRun.buildNumber;
 
       const updatedRun = runStore.update(latestRun.module, latestRun.id, {
         ...patch,
@@ -333,6 +344,22 @@ function validateRunParams(params, flow) {
   }
 }
 
+function createRunId(moduleId) {
+  return `${String(moduleId || 'run').toLowerCase()}-${Date.now()}-${crypto.randomUUID()}`;
+}
+
+function normalizeBuildNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return String(value);
+}
+
+function isDifferentBuildNumber(currentBuildNumber, incomingBuildNumber) {
+  const current = normalizeBuildNumber(currentBuildNumber);
+  const incoming = normalizeBuildNumber(incomingBuildNumber);
+
+  return Boolean(current && incoming && current !== incoming);
+}
+
 async function createRun(moduleConfig, params) {
   validateRequiredEnv();
 
@@ -341,7 +368,9 @@ async function createRun(moduleConfig, params) {
 
   const config = buildRunConfig(moduleConfig, params, flow);
   const now = new Date().toISOString();
+  const runId = createRunId(moduleConfig.id);
   const run = runStore.create({
+    id: runId,
     module: moduleConfig.id,
     collection: getCollectionLabel(moduleConfig.collectionFile),
     flow: flow.id,
@@ -356,6 +385,9 @@ async function createRun(moduleConfig, params) {
     summary: createDefaultSummary(),
     reports: buildReports({ jobName: moduleConfig.jobName, buildNumber: null })
   });
+  console.log(
+    `[RUN-LIFECYCLE] generated runId=${run.id} module=${run.module} flow=${run.flow} endpoint=POST /api/${run.module}/runs`
+  );
 
   try {
     const triggered = await triggerJenkinsRun(moduleConfig, run);
@@ -368,6 +400,9 @@ async function createRun(moduleConfig, params) {
       queueId: triggered.queueId,
       reports: buildReports(run)
     });
+    console.log(
+      `[RUN-LIFECYCLE] queued runId=${queuedRun.id} module=${queuedRun.module} queueId=${queuedRun.queueId} job=${queuedRun.jobName}`
+    );
 
     monitorRun(moduleConfig, queuedRun.id).catch(error => {
       const latestRun = runStore.get(queuedRun.module, queuedRun.id) || queuedRun;
@@ -469,6 +504,16 @@ async function monitorRun(moduleConfig, runId) {
   if (!queuedRun) return;
 
   const build = await waitForBuildNumber(moduleConfig, queuedRun.queueId);
+  if (isDifferentBuildNumber(queuedRun.buildNumber, build.buildNumber)) {
+    console.warn(
+      `[RUN-LIFECYCLE] ignored build assignment runId=${runId} incomingBuild=${build.buildNumber} currentBuild=${queuedRun.buildNumber}`
+    );
+    return;
+  }
+
+  console.log(
+    `[RUN-LIFECYCLE] build assigned runId=${runId} module=${moduleConfig.id} buildNumber=${build.buildNumber} queueId=${queuedRun.queueId}`
+  );
   runStore.update(moduleConfig.id, runId, {
     buildNumber: build.buildNumber,
     buildUrl: build.buildUrl,
@@ -609,8 +654,16 @@ async function getLiveProgressPatchFromJenkinsArtifact(run) {
       return null;
     }
 
+    const artifactBuildNumber = progress.execution?.buildNumber || run.buildNumber;
+    if (isDifferentBuildNumber(run.buildNumber, artifactBuildNumber)) {
+      console.warn(
+        `[LIVE-PROGRESS] ignored stale artifact ${run.module}/${run.id} artifactBuild=${artifactBuildNumber} currentBuild=${run.buildNumber}`
+      );
+      return null;
+    }
+
     const patch = mapProgressToRun(progress, run);
-    const buildNumber = progress.execution?.buildNumber || run.buildNumber;
+    const buildNumber = artifactBuildNumber;
     const withBuild = {
       ...patch,
       buildNumber,
