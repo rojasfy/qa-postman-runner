@@ -45,7 +45,9 @@ function mapApi(api) {
       statusText: api.statusText || api.response?.statusText || null,
       timeMs: api.responseTime || api.response?.timeMs || null,
       headers: api.response?.headers || {},
-      body: api.response?.body ?? null
+      body: api.response?.body ?? null,
+      bodyTruncated: Boolean(api.response?.bodyTruncated),
+      originalBodySize: api.response?.originalBodySize || null
     },
     assertions: (api.assertions || []).map(assertion => ({
       name: assertion.name || 'Unnamed assertion',

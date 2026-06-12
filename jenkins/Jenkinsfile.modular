@@ -221,6 +221,7 @@ pipeline {
                                 const raw = fs.readFileSync(file, "utf8");
                                 const progress = JSON.parse(raw);
                                 const mode = String(process.env.LIVE_PROGRESS_MODE || "filtered").toLowerCase();
+                                const successResponseBodyMaxBytes = 20000;
                                 const headerWhitelist = new Set(["partition", "true-client-ip", "authorization", "token", "user-token", "access-token"]);
                                 const methodsWithBody = new Set(["POST", "PUT", "PATCH"]);
                                 const normalizeStatus = value => {
@@ -267,6 +268,39 @@ pipeline {
                                   const originalBodySize = bytesOf(api.request.body);
                                   return { ...request, body: api.request.body, bodyTruncated: false, originalBodySize };
                                 };
+                                const truncateBody = (body, maxBytes) => {
+                                  if (body === undefined || body === null) {
+                                    return { body: null, bodyTruncated: false, originalBodySize: 0 };
+                                  }
+
+                                  const bodyText = typeof body === "string" ? body : JSON.stringify(body ?? null);
+                                  const originalBodySize = Buffer.byteLength(bodyText, "utf8");
+
+                                  if (!maxBytes || originalBodySize <= maxBytes) {
+                                    return { body, bodyTruncated: false, originalBodySize };
+                                  }
+
+                                  return {
+                                    body: Buffer.from(bodyText, "utf8").subarray(0, maxBytes).toString("utf8"),
+                                    bodyTruncated: true,
+                                    originalBodySize
+                                  };
+                                };
+                                const responseOf = (api, status) => {
+                                  const responseBody = api.response && Object.prototype.hasOwnProperty.call(api.response, "body")
+                                    ? api.response.body
+                                    : null;
+                                  const maxBytes = status === "FAILURE" ? null : successResponseBodyMaxBytes;
+                                  const bodyDetail = truncateBody(responseBody, maxBytes);
+
+                                  return {
+                                    statusCode: api.statusCode || (api.response && api.response.statusCode) || null,
+                                    statusText: api.statusText || (api.response && api.response.statusText) || null,
+                                    timeMs: api.responseTime || (api.response && api.response.timeMs) || null,
+                                    headers: headersOf(api.response && api.response.headers),
+                                    ...bodyDetail
+                                  };
+                                };
                                 const rawApis = Array.isArray(progress.apis) ? progress.apis : (Array.isArray(progress.apiExecutions) ? progress.apiExecutions : []);
                                 const apis = rawApis.map(api => {
                                   const status = normalizeStatus(api.status);
@@ -283,15 +317,10 @@ pipeline {
                                     statusCode: api.statusCode || (api.response && api.response.statusCode) || null,
                                     statusText: api.statusText || (api.response && api.response.statusText) || null,
                                     responseTime: api.responseTime || (api.response && api.response.timeMs) || null,
-                                    executedAt: api.executedAt || null,
-                                    request: requestOf(api),
-                                    response: {
-                                      statusCode: api.statusCode || (api.response && api.response.statusCode) || null,
-                                      statusText: api.statusText || (api.response && api.response.statusText) || null,
-                                      timeMs: api.responseTime || (api.response && api.response.timeMs) || null,
-                                      headers: headersOf(api.response && api.response.headers)
-                                    },
-                                    assertions: [{
+                                     executedAt: api.executedAt || null,
+                                     request: requestOf(api),
+                                    response: responseOf(api, status),
+                                     assertions: [{
                                       total: assertions.length,
                                       passed: assertions.filter(assertion => normalizeStatus(assertion.status) === "SUCCESS").length,
                                       failed: assertions.filter(assertion => normalizeStatus(assertion.status) === "FAILURE").length,
